@@ -1,0 +1,37 @@
+
+# Binaries for programs
+*.exe
+*.darwin-amd64
+*.darwin-arm64
+*.linux-amd64
+*.linux-arm64
+*.windows-amd64
+
+# Compiled package files
+pkg/
+
+# Optional: Binaries output by the go build command
+# If you have a specific bin output directory (e.g., /bin or /build), ignore that entire directory
+/bin
+/build
+
+# Dependency directories (golang vendor)
+vendor/
+
+# Environment files
+.env
+.env.local
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# IDE/Editor specific files (adjust as needed)
+# VS Code
+.vscode/
+# JetBrains IDEs (GoLand, IntelliJ)
+.idea/
+
+# Test results
+Todo.md
+test_results/
