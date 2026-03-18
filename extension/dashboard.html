@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice Dashboard</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Invoice Dashboard</h1>
+      <div class="subtitle">Verify and generate invoices from WhatsApp</div>
+    </div>
+
+    <div class="extract-bar">
+      <button id="extract-btn">📥 Extract Current Chat</button>
+      <div id="extract-status">Open a WhatsApp chat, then click Extract.</div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-tab="pending">Pending Verification</div>
+      <div class="tab" data-tab="approved">Approved</div>
+      <div class="tab" data-tab="generated">Generated</div>
+      <div class="tab" data-tab="rejected">Rejected</div>
+    </div>
+
+    <div class="content">
+      <div id="pending-tab" class="tab-content active">
+        <div id="pending-list" class="invoice-list"></div>
+      </div>
+      <div id="approved-tab" class="tab-content">
+        <div id="approved-list" class="invoice-list"></div>
+      </div>
+      <div id="generated-tab" class="tab-content">
+        <div id="generated-list" class="invoice-list"></div>
+      </div>
+      <div id="rejected-tab" class="tab-content">
+        <div id="rejected-list" class="invoice-list"></div>
+      </div>
+      <div id="detail-view" style="display: none;"></div>
+    </div>
+  </div>
+  <script src="dashboard.js"></script>
+</body>
+</html>

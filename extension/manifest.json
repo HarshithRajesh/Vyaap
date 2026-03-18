@@ -1,0 +1,35 @@
+{
+    "manifest_version": 3,
+    "name": "Vyaap",
+    "version": "1.0",
+    "description": "Extract WhatsApp messages and generate invoices with AI assistance",
+    "permissions": [
+        "activeTab",
+        "storage",
+        "sidePanel",
+        "scripting"
+    ],
+    "host_permissions": [
+        "https://web.whatsapp.com/*"
+    ],
+    "content_scripts": [
+        {
+            "matches": [
+                "https://web.whatsapp.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "action": {
+        "default_title": "Vyaap"
+    },
+    "side_panel": {
+        "default_path": "dashboard.html"
+    }
+}
