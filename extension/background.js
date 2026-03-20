@@ -1,59 +1,124 @@
-// it helps to get messages from content script and also helps to store invoices in local storage and also send data to backend for processing and invoice generation
-const BACKEND = 'put your endpoint here '; 
+// 1. Target your Go Backend (ensure no trailing slash)
+const BACKEND = 'http://localhost:8080';
 
+// --- 1. THE MAIN MESSAGE LISTENER ---
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  console.log('[Vyaap BG] Incoming Action:', request.action);
 
-// opens extension when click
-chrome.action.onClicked.addListener((tab) => {
-  chrome.sidePanel.open({ tabId: tab.id });
+  handleAction(request)
+    .then(sendResponse)
+    .catch(e => {
+      console.error('[Vyaap BG] Error in Bridge:', e.message);
+      sendResponse({ success: false, error: e.message });
+    });
+
+  return true; // Required for async fetch
 });
-async function getInvoices() {
-  const result = await chrome.storage.local.get('invoices');
-  return result.invoices || [];
-}
 
-// as said it is currenty storing in local storage
-async function saveInvoices(invoices) {
-  await chrome.storage.local.set({ invoices });
-}
+// --- 2. THE ACTION ROUTER ---
+async function handleAction(request) {
+  switch (request.action) {
+    case 'extractAndCreateInvoice': {
+      const tab = await getWhatsAppTab();
 
-// function to generate unique invoices 
-function generateId() {
-  return 'inv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-}
+      // Step A: Extract from DOM
+      const chatRes = await sendToContent(tab.id, { action: 'extractCurrentChat' });
+      const msgRes = await sendToContent(tab.id, {
+        action: 'extractAllMessages',
+        maxScrolls: 5,
+        scrollDelay: 500
+      });
 
+      // Step B: LOG THE DATA (Check your Service Worker Console for this!)
+      const extractedMessages = msgRes.data || [];
+      console.log(`[Vyaap BG] DOM Extracted ${extractedMessages.length} messages.`);
+
+      // Step C: THE HANDSHAKE (Sending to Go)
+      // We send a mix of real data and a test string to verify the bridge
+      const payload = {
+        chatName: chatRes.data?.name || "Neo Test Chat",
+        messages: extractedMessages.length > 0 ? extractedMessages : ["Bridge Test: DOM was empty"]
+      };
+
+      console.log("🚀 Pushing Payload to Go:", payload);
+      const backendResponse = await postToBackend('/ingest', payload);
+
+      return {
+        success: true,
+        goResponse: backendResponse.message,
+        count: extractedMessages.length
+      };
+    }
+
+    default:
+      return { success: false, error: `Action ${request.action} not handled.` };
+  }
+}
+async function postToBackend(endpoint, body) {
+  // HARD-CODED FOR DEBUGGING
+  const url = "http://localhost:8080/ingest";
+
+  console.log(`[Vyaap] Knocking on door: ${url}`);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Go Server Error ${response.status}: ${errorText}`);
+  }
+
+  return response.json();
+}
+// --- 3. THE FETCH HELPER ---
+// async function postToBackend(endpoint, body) {
+//   // const url = BACKEND + endpoint;
+//   const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+//   const fullUrl = BACKEND + path;
+//
+//   console.log(`[Vyaap BG] POSTING TO: ${fullUrl}`);
+//   const response = await fetch(fullUrl, {
+//     method: 'POST',
+//     headers: { 'Content-Type': 'application/json' },
+//     body: JSON.stringify(body)
+//   });
+//
+//   if (!response.ok) {
+//     const errorText = await response.text();
+//     throw new Error(`Go Server Error ${response.status}: ${errorText}`);
+//   }
+//
+//   return response.json();
+// }
+
+// --- 4. THE TAB & INJECTION HELPERS ---
 async function getWhatsAppTab() {
   const tabs = await chrome.tabs.query({ url: 'https://web.whatsapp.com/*' });
   if (!tabs || tabs.length === 0) {
-    throw new Error('WhatsApp Web is not open. Please open web.whatsapp.com first.');
+    throw new Error('Please open WhatsApp Web first.');
   }
-  const tab = tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
 
-  const alive = await new Promise(resolve => {
+  const tab = tabs[0];
+
+  // Ping to see if content.js is awake
+  const isReady = await new Promise(resolve => {
     chrome.tabs.sendMessage(tab.id, { action: 'checkReady' }, (res) => {
       resolve(!chrome.runtime.lastError && res?.ready === true);
     });
   });
 
-  if (!alive) {
+  if (!isReady) {
+    console.log("[Vyaap BG] Content Script missing. Forcing injection...");
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-    let attempts = 0, isReady = false;
-    while (attempts < 10 && !isReady) {
-      await new Promise(r => setTimeout(r, 800));
-      isReady = await new Promise(resolve => {
-        chrome.tabs.sendMessage(tab.id, { action: 'checkReady' }, (res) => {
-          resolve(!chrome.runtime.lastError && res?.ready === true);
-        });
-      });
-      attempts++;
-    }
-    if (!isReady) throw new Error('WhatsApp not ready. Wait for the chat to load and try again.');
+    await new Promise(r => setTimeout(r, 600));
   }
 
   return tab;
 }
 
-
- // function to send message to content script ..
 function sendToContent(tabId, message) {
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
@@ -61,156 +126,4 @@ function sendToContent(tabId, message) {
       else resolve(response);
     });
   });
-}
- 
-// auth bearer token for secure communication
-async function getAuthToken() {
-  const result = await chrome.storage.local.get('authToken');
-  return result.authToken || null;
-}
-
-
-// this  function is used to send data to backend
-async function postToBackend(endpoint, body) {
-  const token = await getAuthToken();
-
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
-  const response = await fetch(`${BACKEND}${endpoint}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Backend error ${response.status}: ${err}`);
-  }
-
-  return response.json();
-}
- 
-
-// main message listener
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('[BG] Action:', request.action);
-  if (request.action === 'contentScriptReady') return false;
-
-  handleAction(request)
-    .then(sendResponse)
-    .catch(e => {
-      console.error('[BG] Error:', e.message);
-      sendResponse({ success: false, error: e.message });
-    });
-
-  return true;
-});
-
-async function handleAction(request) {
-  switch (request.action) {
-
-    case 'getPendingInvoices': {
-      const invoices = await getInvoices();
-      return { success: true, invoices };
-    }
-
-    case 'extractAndCreateInvoice': {
-      const tab = await getWhatsAppTab();
-
-      const chatRes = await sendToContent(tab.id, { action: 'extractCurrentChat' });
-      if (!chatRes?.success) throw new Error('Could not read chat. Open a WhatsApp chat first.');
-
-      const msgRes = await sendToContent(tab.id, {
-        action: 'extractAllMessages',
-        maxScrolls: 30,
-        scrollDelay: 800
-      });
-      if (!msgRes?.success) throw new Error('Message extraction failed: ' + (msgRes?.error || 'unknown'));
-
-      const messages = msgRes.data || [];
-      if (messages.length === 0) throw new Error('No messages found in this chat.');
-
-      console.log(`[BG] Sending ${messages.length} messages to backend...`);
-
-      const backendResponse = await postToBackend('/invoice/extract', {
-        chatName: chatRes.data?.name || 'Unknown',
-        messages: messages
-      });
-
-      if (!backendResponse.success) {
-        throw new Error(backendResponse.error || 'Backend processing failed');
-      }
-
-      const invoice = {
-        ...backendResponse.invoice,
-        id: backendResponse.invoice.id || generateId(),
-      };
-
-      const invoices = await getInvoices();
-      invoices.unshift(invoice);
-      await saveInvoices(invoices);
-
-      chrome.runtime.sendMessage({ target: 'dashboard', type: 'newInvoice', invoice }).catch(() => {});
-
-      return {
-        success: true,
-        invoice,
-        messageCount: messages.length
-      };
-    }
-
-    case 'generateInvoice': {
-      const invoices = await getInvoices();
-      const idx = invoices.findIndex(inv => inv.id === request.invoiceId);
-      if (idx === -1) throw new Error('Invoice not found');
-
-      const backendResponse = await postToBackend('/invoice/generate', invoices[idx]);
-
-      if (!backendResponse.success) {
-        throw new Error(backendResponse.error || 'Invoice generation failed');
-      }
-
-      invoices[idx] = { ...backendResponse.invoice };
-      await saveInvoices(invoices);
-
-      return { success: true, invoice: invoices[idx] };
-    }
-
-    case 'updateInvoice': {
-      const invoices = await getInvoices();
-      const idx = invoices.findIndex(inv => inv.id === request.invoiceId);
-      if (idx === -1) throw new Error('Invoice not found');
-      invoices[idx].data = {
-        ...invoices[idx].data,
-        ...request.updates,
-        rawMessages: invoices[idx].data?.rawMessages || invoices[idx].rawMessages
-      };
-      invoices[idx].updatedAt = new Date().toISOString();
-      await saveInvoices(invoices);
-      return { success: true };
-    }
-
-    case 'approveInvoice': {
-      const invoices = await getInvoices();
-      const idx = invoices.findIndex(inv => inv.id === request.invoiceId);
-      if (idx === -1) throw new Error('Invoice not found');
-      invoices[idx].status = 'approved';
-      invoices[idx].approvedAt = new Date().toISOString();
-      await saveInvoices(invoices);
-      return { success: true };
-    }
-
-    case 'deleteInvoice': {
-      let invoices = await getInvoices();
-      invoices = invoices.filter(inv => inv.id !== request.invoiceId);
-      await saveInvoices(invoices);
-      return { success: true };
-    }
-
-    default: {
-      const tab = await getWhatsAppTab();
-      return await sendToContent(tab.id, request);
-    }
-  }
 }
