@@ -7,6 +7,7 @@ import redis
 import json
 import uuid
 import hashlib
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
@@ -42,15 +43,23 @@ class InvoiceData(BaseModel):
     confidence_score: float = 0.0
 
 class UserVectorStore:
-    """Vector database for user tracking and deduplication"""
+    """Vector store for user tracking and deduplication"""
     
-    def __init__(self):
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
-        self.dimension = 384  # Embedding dimension
-        self.index = faiss.IndexFlatL2(self.dimension)
-        self.user_data = {}  # user_id -> user_info
-        self.message_embeddings = []  # Store embeddings for deduplication
-        
+    def __init__(self, redis_client=None):
+        # Use Redis-based storage if available, fallback to in-memory
+        if redis_client:
+            from redis_user_store import RedisUserStore
+            self.store = RedisUserStore(redis_client)
+            self.use_redis = True
+        else:
+            # Fallback to in-memory storage (for testing)
+            self.user_data = {}  # user_id -> user_info
+            self.message_embeddings = []  # Store embeddings for deduplication
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            embedding_dim = self.model.get_sentence_embedding_dimension()
+            self.index = faiss.IndexFlatL2(embedding_dim)
+            self.use_redis = False
+    
     def generate_user_id(self, chat_name: str, contact_info: str = None) -> str:
         """Generate unique user ID"""
         content = f"{chat_name}_{contact_info or 'unknown'}"
@@ -58,42 +67,52 @@ class UserVectorStore:
     
     def add_user_message(self, user_id: str, message: WhatsAppMessage):
         """Add message to user's vector store"""
-        # Create embedding
-        text_embedding = self.model.encode([message.text])
-        
-        # Add to FAISS index
-        self.index.add(text_embedding)
-        
-        # Store user data
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {
-                'chat_name': message.chat_name,
-                'messages': [],
-                'invoices': [],
-                'last_updated': datetime.now()
-            }
-        
-        self.user_data[user_id]['messages'].append(message)
-        self.user_data[user_id]['last_updated'] = datetime.now()
+        if self.use_redis:
+            # Use Redis-based storage
+            self.store.add_user_message(user_id, message)
+        else:
+            # Fallback to in-memory storage
+            # Create embedding
+            text_embedding = self.model.encode([message.text])
+            
+            # Add to FAISS index
+            self.index.add(text_embedding)
+            
+            # Store user data
+            if user_id not in self.user_data:
+                self.user_data[user_id] = {
+                    'chat_name': message.chat_name,
+                    'messages': [],
+                    'invoices': [],
+                    'last_updated': datetime.now()
+                }
+            
+            self.user_data[user_id]['messages'].append(message)
+            self.user_data[user_id]['last_updated'] = datetime.now()
         
     def check_duplicate(self, message: WhatsAppMessage, threshold: float = 0.8) -> bool:
         """Check if message is duplicate"""
-        if self.index.ntotal == 0:
-            return False
+        if self.use_redis:
+            # Use Redis-based duplicate checking
+            return self.store.check_duplicate(message, threshold)
+        else:
+            # Fallback to in-memory duplicate checking
+            if self.index.ntotal == 0:
+                return False
+                
+            # Get embedding for new message
+            new_embedding = self.model.encode([message.text])
             
-        # Get embedding for new message
-        new_embedding = self.model.encode([message.text])
-        
-        # Search for similar messages
-        distances, indices = self.index.search(new_embedding, k=5)
-        
-        # Check if any message is too similar
-        for distance in distances[0]:
-            similarity = 1 - distance  # Convert distance to similarity
-            if similarity > threshold:
-                return True
-        
-        return False
+            # Search for similar messages
+            distances, indices = self.index.search(new_embedding, k=5)
+            
+            # Check if any message is too similar
+            for distance in distances[0]:
+                similarity = 1 - distance  # Convert distance to similarity
+                if similarity > threshold:
+                    return True
+            
+            return False
     
     def get_user_messages(self, user_id: str, hours: int = 24) -> List[WhatsAppMessage]:
         """Get user messages from last N hours"""
@@ -182,17 +201,43 @@ class HinglishTextProcessor:
         return prices
 
 class AIInvoiceExtractor:
-    """AI-powered invoice information extraction"""
+    """AI-based invoice information extraction using LangChain"""
     
     def __init__(self, api_key: str = None):
         self.api_key = api_key or os.getenv('OPENAI_API_KEY')
         self.text_processor = HinglishTextProcessor()
         
+        # Use advanced extractor if available
+        try:
+            from advanced_invoice_extractor import AdvancedInvoiceExtractor
+            self.advanced_extractor = AdvancedInvoiceExtractor(api_key)
+            self.use_advanced = True
+        except ImportError:
+            self.advanced_extractor = None
+            self.use_advanced = False
+        
     def extract_invoice_info(self, message: WhatsAppMessage) -> InvoiceData:
         """Extract invoice information from WhatsApp message"""
+        # Use advanced LangChain extractor if available
+        if self.use_advanced and self.advanced_extractor:
+            try:
+                return self.advanced_extractor.extract_invoice_info(message)
+            except Exception as e:
+                print(f"Advanced extraction failed, falling back: {e}")
+        
+        # Fallback to rule-based extraction
         normalized_text = self.text_processor.normalize_text(message.text)
         numbers = self.text_processor.extract_numbers(normalized_text)
         prices = self.text_processor.extract_prices(normalized_text)
+        
+        # Check if this is actually an order
+        if not self._is_order_message(normalized_text, numbers, prices):
+            # Return empty invoice for non-order messages
+            return InvoiceData(
+                order_id=str(uuid.uuid4())[:8],
+                order_date=datetime.now().strftime('%Y-%m-%d'),
+                confidence_score=0.0
+            )
         
         # Create structured invoice data
         invoice = InvoiceData(
@@ -220,6 +265,56 @@ class AIInvoiceExtractor:
         
         return invoice
     
+    def _is_order_message(self, text: str, numbers: List[int], prices: List[float]) -> bool:
+        """Check if message is actually an order"""
+        # Order indicators
+        order_keywords = [
+            'chahiye', 'chahi', 'lenge', 'le', 'dena', 'dena', 'pack', 'pack karo',
+            'order', 'booking', 'reserve', 'book', 'book karo', 'order karo',
+            'mang', 'mangna', 'mang rahe', 'mungi', 'mungiye'
+        ]
+        
+        # Non-order indicators
+        non_order_keywords = [
+            'price', 'kitna', 'how much', 'cost', 'rate', 'charges',
+            'thank', 'thanks', 'dhanyawad', 'shukriya',
+            'ok', 'okay', 'thik', 'theek', 'confirm', 'confirm kar diya',
+            'hi', 'hello', 'bye', 'good morning', 'good evening',
+            'delivery', 'address', 'location', 'where'
+        ]
+        
+        text_lower = text.lower()
+        
+        # Check for order keywords
+        has_order_keyword = any(keyword in text_lower for keyword in order_keywords)
+        
+        # Check for non-order keywords (if only these are present, it's not an order)
+        has_non_order_keyword = any(keyword in text_lower for keyword in non_order_keywords)
+        
+        # Check for quantities (strong indicator of order)
+        has_quantity = len(numbers) > 0
+        
+        # Check for prices (can be order or inquiry)
+        has_price = len(prices) > 0
+        
+        # Logic: It's an order if:
+        # 1. Has order keyword OR
+        # 2. Has quantity AND (order keyword OR not just price inquiry)
+        if has_order_keyword:
+            return True
+        
+        if has_quantity and not (has_price and not has_order_keyword):
+            return True
+        
+        # Special cases
+        if 'confirm' in text_lower and has_quantity:
+            return True
+        
+        if 'delivery' in text_lower and has_quantity:
+            return True
+        
+        return False
+    
     def _extract_items(self, text: str, numbers: List[int]) -> List[Dict[str, Any]]:
         """Extract items from message"""
         items = []
@@ -229,7 +324,7 @@ class AIInvoiceExtractor:
         if len(numbers) > 0:
             quantity = numbers[0]
             
-            # Extract item description
+            # Extract clean item description
             words = text.split()
             item_desc = []
             
@@ -238,19 +333,50 @@ class AIInvoiceExtractor:
                 if word.isdigit() and i < len(words) - 1:
                     # Get next few words as item description
                     for j in range(i+1, min(i+4, len(words))):
-                        if words[j] not in ['karo', 'dena', 'please', 'pack']:
-                            item_desc.append(words[j])
-                        else:
+                        candidate_word = words[j].lower()
+                        
+                        # Stop words that indicate end of item description
+                        stop_words = ['karo', 'dena', 'please', 'pack', 'chahiye', 'lenge', 
+                                     'le', 'mang', 'order', 'booking', 'price', 'rs', 'rupees',
+                                     'delivery', 'address', 'urgent', 'jaldi', 'fast']
+                        
+                        # Skip stop words
+                        if candidate_word in stop_words:
                             break
+                        
+                        # Clean the word
+                        clean_word = candidate_word.strip()
+                        
+                        # Skip if word is too short or just punctuation
+                        if len(clean_word) < 2:
+                            continue
+                        
+                        # Skip if it's a number again
+                        if clean_word.isdigit():
+                            break
+                        
+                        item_desc.append(clean_word)
+                    
                     break
             
+            # Clean up item description
             if item_desc:
-                items.append({
-                    'quantity': quantity,
-                    'description': ' '.join(item_desc),
-                    'unit_price': None,
-                    'total_price': None
-                })
+                # Join words and clean up
+                clean_description = ' '.join(item_desc)
+                
+                # Remove common filler words
+                filler_words = ['the', 'is', 'are', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for']
+                clean_words = [word for word in clean_description.split() if word not in filler_words]
+                final_description = ' '.join(clean_words)
+                
+                # Only add if we have a meaningful description
+                if len(final_description) > 2:
+                    items.append({
+                        'quantity': quantity,
+                        'description': final_description,
+                        'unit_price': None,
+                        'total_price': None
+                    })
         
         return items
     
@@ -314,18 +440,23 @@ class AIPipeline:
     
     def __init__(self, redis_host: str = 'localhost', redis_port: int = 6379):
         self.redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
-        self.vector_store = UserVectorStore()
+        self.vector_store = UserVectorStore(redis_client=self.redis_client)  # Pass Redis client
         self.invoice_extractor = AIInvoiceExtractor()
         self.processed_messages = set()
         
-        # Redis queue names
-        self.input_queue = "vyaap:queue:raw_chats:test_neo"
+        # Redis queue names (matching backend structure)
+        self.input_queue_pattern = "vyaap:queue:raw_chats:*"
         self.output_queue = "vyaap:queue:processed_invoices"
         self.error_queue = "vyaap:queue:processing_errors"
         
     def publish_invoice(self, invoice: InvoiceData, original_message: WhatsAppMessage):
         """Publish processed invoice back to Redis"""
         try:
+            # Skip publishing if it's not an actual order (empty items and low confidence)
+            if not invoice.items and invoice.confidence_score == 0.0:
+                print(f"[AI_PIPELINE] Skipping non-order message: {original_message.text[:50]}...")
+                return
+            
             # Create output message with invoice data
             output_data = {
                 "order_id": invoice.order_id,
@@ -364,24 +495,121 @@ class AIPipeline:
             self.redis_client.ping()
             print("[AI_PIPELINE] Connected to Redis successfully")
         except Exception as e:
-            print(f"AI_PIPELINE] Redis Connection Error: {e}")
+            print(f"[AI_PIPELINE] Redis Connection Error: {e}")
             return
         
         while True:
             try:
-                # Wait for messages from Redis
-                task = self.redis_client.blpop(self.input_queue, timeout=0)
+                # Get all active chat queues
+                chat_queues = self.get_active_chat_queues()
+                
+                if not chat_queues:
+                    print("[AI_PIPELINE] No active chat queues found, waiting...")
+                    time.sleep(5)
+                    continue
+                
+                # Listen to all active chat queues
+                task = self.redis_client.blpop(chat_queues, timeout=10)
                 
                 if task:
-                    raw_data = task[1]
-                    self.process_message(raw_data)
+                    queue_name, raw_data = task
+                    chat_name = self.extract_chat_name(queue_name)
+                    self.process_individual_message(raw_data, chat_name)
                     
             except Exception as e:
                 print(f"[AI_PIPELINE] Error processing message: {e}")
                 continue
     
+    def get_active_chat_queues(self):
+        """Get all active chat queues"""
+        try:
+            # Use SCAN to find all queues matching the pattern
+            cursor = 0
+            queues = []
+            
+            while True:
+                cursor, keys = self.redis_client.scan(cursor, match=self.input_queue_pattern, count=10)
+                
+                for key in keys:
+                    # Check if queue has messages
+                    if self.redis_client.llen(key) > 0:
+                        queues.append(key)
+                
+                if cursor == 0:
+                    break
+            
+            return queues
+            
+        except Exception as e:
+            print(f"[AI_PIPELINE] Error scanning queues: {e}")
+            return []
+    
+    def extract_chat_name(self, queue_name):
+        """Extract chat name from queue name"""
+        # queue_name format: vyaap:queue:raw_chats:{chatName}
+        parts = queue_name.split(":")
+        return parts[-1] if len(parts) >= 4 else "unknown"
+    
+    def process_individual_message(self, raw_data: str, chat_name: str):
+        """Process individual message from backend (matches Go ChatMessage struct)"""
+        try:
+            # Parse JSON data (backend sends individual messages)
+            msg_data = json.loads(raw_data)
+            
+            # Create WhatsApp message object (matches Go ChatMessage struct)
+            message = WhatsAppMessage(
+                text=msg_data.get('text', ''),
+                sender=msg_data.get('sender', 'unknown'),
+                timestamp=msg_data.get('timestamp', ''),
+                chat_name=chat_name
+            )
+            
+            # Generate user ID
+            user_id = self.vector_store.generate_user_id(chat_name, message.sender)
+            
+            # Check for duplicates
+            message_hash = hashlib.md5(f"{message.text}_{message.timestamp}".encode()).hexdigest()
+            if message_hash in self.processed_messages:
+                print(f"[AI_PIPELINE] Duplicate message skipped: {message.text[:50]}...")
+                return
+            
+            # Check for similar messages
+            if self.vector_store.check_duplicate(message):
+                print(f"[AI_PIPELINE] Similar message skipped: {message.text[:50]}...")
+                return
+            
+            # Add to vector store
+            self.vector_store.add_user_message(user_id, message)
+            
+            # Extract invoice information
+            invoice = self.invoice_extractor.extract_invoice_info(message)
+            
+            # Store invoice
+            if self.vector_store.use_redis:
+                self.vector_store.store.add_user_invoice(user_id, invoice)
+            elif user_id in self.vector_store.user_data:
+                self.vector_store.user_data[user_id]['invoices'].append(invoice)
+            
+            # Publish invoice back to Redis
+            self.publish_invoice(invoice, message)
+            
+            # Mark as processed
+            self.processed_messages.add(message_hash)
+            
+            # Output results
+            print(f"\n[AI_PIPELINE] New Message Processed:")
+            print(f"Chat: {chat_name}")
+            print(f"Message: {message.text}")
+            print(f"Extracted Invoice: {invoice.dict()}")
+            print(f"Confidence: {invoice.confidence_score:.2f}")
+            print(f"Published to Redis queue: {self.output_queue}")
+            print("-" * 50)
+                
+        except Exception as e:
+            print(f"[AI_PIPELINE] Error processing message: {e}")
+    
     def process_message(self, raw_data: str):
-        """Process a single WhatsApp message"""
+        """Process a single WhatsApp message (legacy method for testing)"""
         try:
             # Parse JSON data
             data = json.loads(raw_data)

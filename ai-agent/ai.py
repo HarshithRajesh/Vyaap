@@ -4,7 +4,7 @@ import json
 def start_worker():
     try:
         r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-        print("✅ Python Worker connected to Redis. Waiting for messages...")
+        print("[SUCCESS] Python Worker connected to Redis. Waiting for messages...")
     except Exception as e:
         print(f"❌ Redis Connection Error: {e}")
         return
