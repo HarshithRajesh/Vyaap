@@ -3,9 +3,11 @@ package config
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
+	"github.com/HarshithRajesh/Vyaap/internal/models"
 	"github.com/joho/godotenv"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -40,9 +42,9 @@ func ConnectDB() (*gorm.DB, error) {
 	}
 	fmt.Println("Database connect to GORM!!!")
 
-	// if err := db.AutoMigrate(&models.User{}); err != nil {
-	// 	log.Fatalf("Failed to migrate database: %v", err)
-	// }
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		log.Fatalf("Failed to migrate database: %v", err)
+	}
 	return db, nil
 }
 
