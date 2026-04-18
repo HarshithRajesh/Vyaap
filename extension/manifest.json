@@ -7,7 +7,8 @@
     "activeTab",
     "storage",
     "sidePanel",
-    "scripting"
+    "scripting",
+    "cookies"
   ],
   "host_permissions": [
     "https://web.whatsapp.com/*",
@@ -31,6 +32,6 @@
     "default_title": "Vyaap"
   },
   "side_panel": {
-    "default_path": "dashboard.html"
+    "default_path": "dashboard-react/index.html"
   }
 }
