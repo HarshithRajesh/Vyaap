@@ -371,12 +371,11 @@ export LOG_LEVEL=DEBUG
 python ai_pipeline.py
 ```
 
-### Production Deployment
-- Use process manager (systemd, supervisor)
-- Configure log rotation
-- Set up monitoring and alerts
-- Use Redis cluster for high availability
-
 ## License
 
 This project is part of the Vyaap WhatsApp invoice extraction system.
+
+## Version History
+
+- v1.0.0 - Initial AI pipeline with Gemini 2.5 Flash integration
+- v1.0.1 - Added comprehensive documentation and cleanup
