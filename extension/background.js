@@ -1,7 +1,13 @@
-// 1. Target your Go Backend (ensure no trailing slash)
+// ─── Vyaap Background Service Worker ─────────────────────────────────────────
+// Bridges: React Side Panel ↔ content.js (WhatsApp DOM) ↔ Go Backend
+//
+// New actions added for React auth:
+//   vyaapLogin  → POST /login, capture Set-Cookie token → chrome.storage.local
+//   vyaapLogout → GET /logout with Bearer token, clear storage
+
 const BACKEND = 'http://localhost:8080';
 
-// --- 1. THE MAIN MESSAGE LISTENER ---
+// ─── Main message listener ────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('[Vyaap BG] Incoming Action:', request.action);
 
@@ -12,58 +18,137 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ success: false, error: e.message });
     });
 
-  return true; // Required for async fetch
+  return true; // Required for async sendResponse
 });
 
-// --- 2. THE ACTION ROUTER ---
+// ─── Action router ────────────────────────────────────────────────────────────
 async function handleAction(request) {
   switch (request.action) {
+
+    // ── Original: extract WhatsApp chat and ingest ──────────────────────────
     case 'extractAndCreateInvoice': {
       const tab = await getWhatsAppTab();
 
-      // Step A: Extract from DOM
       const chatRes = await sendToContent(tab.id, { action: 'extractCurrentChat' });
-      const msgRes = await sendToContent(tab.id, {
+      const msgRes  = await sendToContent(tab.id, {
         action: 'extractAllMessages',
         maxScrolls: 5,
-        scrollDelay: 500
+        scrollDelay: 500,
       });
 
-      // Step B: LOG THE DATA (Check your Service Worker Console for this!)
       const extractedMessages = msgRes.data || [];
       console.log(`[Vyaap BG] DOM Extracted ${extractedMessages.length} messages.`);
 
-      // Step C: THE HANDSHAKE (Sending to Go)
-      // We send a mix of real data and a test string to verify the bridge
       const payload = {
-        chatName: chatRes.data?.name || "Neo Test Chat",
-        messages: extractedMessages.length > 0 ? extractedMessages : ["Bridge Test: DOM was empty"]
+        chatName: chatRes.data?.name || 'Unknown Chat',
+        messages: extractedMessages.length > 0 ? extractedMessages : [],
       };
 
-      console.log("🚀 Pushing Payload to Go:", payload);
-      const backendResponse = await postToBackend('/ingest', payload);
+      console.log('🚀 Pushing Payload to Go:', payload);
+
+      // Get stored token for auth (if backend requires it in future)
+      const token = await getStoredToken();
+      const backendResponse = await postToBackend('/ingest', payload, token);
 
       return {
         success: true,
         goResponse: backendResponse.message,
-        count: extractedMessages.length
+        count: extractedMessages.length,
+        messageCount: extractedMessages.length,
+      };
+    }
+
+    // ── New: Login via background (captures token from response) ───────────
+    case 'vyaapLogin': {
+      const { email, password } = request;
+      const response = await fetch(`${BACKEND}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ Email: email, Password: password }),
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Login failed (${response.status})`);
+      }
+
+      const data = await response.json();
+
+      // Try to extract token from Set-Cookie header (not available in SW fetch)
+      // Instead, read via chrome.cookies API which has access to all cookies
+      let token = null;
+      try {
+        const cookie = await chrome.cookies.get({
+          url: BACKEND,
+          name: 'access_token',
+        });
+        if (cookie) {
+          token = cookie.value;
+          // Store in chrome.storage.local for the React side panel to read
+          await chrome.storage.local.set({ vyaap_access_token: token });
+          console.log('[Vyaap BG] Token captured and stored.');
+        }
+      } catch (cookieErr) {
+        console.warn('[Vyaap BG] Could not read cookie:', cookieErr.message);
+      }
+
+      return { success: true, message: data.message, token };
+    }
+
+    // ── New: Logout via background (protected endpoint) ─────────────────────
+    case 'vyaapLogout': {
+      const token = await getStoredToken();
+      try {
+        await fetch(`${BACKEND}/logout`, {
+          method: 'GET',
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          credentials: 'include',
+        });
+      } catch (e) {
+        console.warn('[Vyaap BG] Logout request failed:', e.message);
+      }
+      await chrome.storage.local.remove(['vyaap_access_token', 'vyaap_user']);
+      return { success: true };
+    }
+
+    // ── Original: get invoices from storage ─────────────────────────────────
+    case 'getPendingInvoices': {
+      const result = await chrome.storage.local.get(['vyaap_invoices']);
+      return {
+        success: true,
+        invoices: result.vyaap_invoices || [],
       };
     }
 
     default:
-      return { success: false, error: `Action ${request.action} not handled.` };
+      return { success: false, error: `Action "${request.action}" not handled.` };
   }
 }
-async function postToBackend(endpoint, body) {
-  // HARD-CODED FOR DEBUGGING
-  const url = "http://localhost:8080/ingest";
 
-  console.log(`[Vyaap] Knocking on door: ${url}`);
+// ─── Fetch helpers ────────────────────────────────────────────────────────────
+async function getStoredToken() {
+  return new Promise(resolve => {
+    chrome.storage.local.get(['vyaap_access_token'], result => {
+      resolve(result.vyaap_access_token || null);
+    });
+  });
+}
+
+async function postToBackend(endpoint, body, token = null) {
+  const url = BACKEND + endpoint;
+  console.log(`[Vyaap BG] POST → ${url}`);
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
 
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    headers,
+    body: JSON.stringify(body),
+    credentials: 'include',
   });
 
   if (!response.ok) {
@@ -73,28 +158,8 @@ async function postToBackend(endpoint, body) {
 
   return response.json();
 }
-// --- 3. THE FETCH HELPER ---
-// async function postToBackend(endpoint, body) {
-//   // const url = BACKEND + endpoint;
-//   const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-//   const fullUrl = BACKEND + path;
-//
-//   console.log(`[Vyaap BG] POSTING TO: ${fullUrl}`);
-//   const response = await fetch(fullUrl, {
-//     method: 'POST',
-//     headers: { 'Content-Type': 'application/json' },
-//     body: JSON.stringify(body)
-//   });
-//
-//   if (!response.ok) {
-//     const errorText = await response.text();
-//     throw new Error(`Go Server Error ${response.status}: ${errorText}`);
-//   }
-//
-//   return response.json();
-// }
 
-// --- 4. THE TAB & INJECTION HELPERS ---
+// ─── Tab & injection helpers ──────────────────────────────────────────────────
 async function getWhatsAppTab() {
   const tabs = await chrome.tabs.query({ url: 'https://web.whatsapp.com/*' });
   if (!tabs || tabs.length === 0) {
@@ -103,15 +168,14 @@ async function getWhatsAppTab() {
 
   const tab = tabs[0];
 
-  // Ping to see if content.js is awake
   const isReady = await new Promise(resolve => {
-    chrome.tabs.sendMessage(tab.id, { action: 'checkReady' }, (res) => {
+    chrome.tabs.sendMessage(tab.id, { action: 'checkReady' }, res => {
       resolve(!chrome.runtime.lastError && res?.ready === true);
     });
   });
 
   if (!isReady) {
-    console.log("[Vyaap BG] Content Script missing. Forcing injection...");
+    console.log('[Vyaap BG] Content script missing. Injecting…');
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
     await new Promise(r => setTimeout(r, 600));
   }
@@ -121,7 +185,7 @@ async function getWhatsAppTab() {
 
 function sendToContent(tabId, message) {
   return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, message, (response) => {
+    chrome.tabs.sendMessage(tabId, message, response => {
       if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
       else resolve(response);
     });

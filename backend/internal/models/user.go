@@ -2,11 +2,11 @@
 package models
 
 type User struct {
-	ID              uint   `gorm:"primaryKey;autoIncrement"`
-	Name            string `gorm:"size:100;not null"`
-	Email           string `gorm:"unique;not null"`
-	Password        string `gorm:"not null"`
-	ConfirmPassword string `gorm:"not null"`
+	ID              uint   `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name            string `gorm:"size:100;not null"        json:"name"`
+	Email           string `gorm:"unique;not null"          json:"email"`
+	Password        string `gorm:"not null"                 json:"password"`
+	ConfirmPassword string `gorm:"not null"                 json:"confirmPassword"`
 }
 
 type Login struct {
