@@ -1,282 +1,382 @@
-# AI Pipeline for WhatsApp Message Processing
+# AI Pipeline - WhatsApp Invoice Extraction System
 
 ## Overview
 
-This AI pipeline processes WhatsApp messages from small businesses to extract invoice information and track revenue. It handles Hinglish text, deduplicates messages, and provides comprehensive business analytics.
-
-## Features
-
-- **Hinglish Text Processing**: Normalizes and extracts information from mixed Hindi-English messages
-- **AI-Powered Extraction**: Uses advanced NLP to extract invoice details
-- **Vector Database**: Tracks users and prevents duplicate processing
-- **Revenue Analytics**: Generates comprehensive revenue reports
-- **REST API**: Provides endpoints for integration with existing systems
-- **Real-time Processing**: Processes messages via Redis queue
+This AI pipeline processes WhatsApp messages to extract invoice information using Google Gemini 2.5 Flash AI model. It consumes messages from Redis queues, performs intelligent extraction with extreme prompt engineering, handles deduplication, and publishes structured invoice data.
 
 ## Architecture
 
 ```
-WhatsApp Extension -> Backend -> Redis Queue -> AI Pipeline -> Vector DB -> API -> Frontend
+Backend (Go) -> Redis Queue -> AI Pipeline (Python) -> Redis Output
+     |                    |                        |
+HTTP POST           vyaap:queue:raw_chats:test_neo   processed_invoices
 ```
 
-## Installation
+## File Structure & Branch Tree
 
-1. Install dependencies:
+```
+ai-pipeline/
+|
+|--- ai_pipeline.py              # Main entry point - orchestrates entire pipeline
+|--- gemini_extractor_fixed.py   # Gemini 2.5 Flash AI integration with extreme prompt engineering
+|--- redis_manager.py            # Redis operations - consume, publish, deduplication keys
+|--- deduplication_simple.py     # Message deduplication using exact key matching
+|--- models.py                   # Data structures - WhatsAppMessage, InvoiceData
+|--- config.py                   # Configuration management from environment variables
+|--- requirements.txt            # Python dependencies
+|--- .env.example                # Environment variables template
+|--- .env                        # Actual environment variables (API keys, Redis config)
+|--- check_queues.py             # Utility to monitor Redis queue status
+|--- view_invoices.py            # Utility to view processed invoices in readable format
+|--- send_test_messages.py       # Utility to send test messages and clear queues
+```
+
+## File Descriptions
+
+### Core Files
+
+#### `ai_pipeline.py`
+- **Purpose**: Main orchestrator for the entire AI pipeline
+- **Functions**: 
+  - Initializes all components (Redis, Deduplication, Gemini)
+  - Runs main processing loop
+  - Handles message consumption, deduplication, extraction, and publishing
+- **Key Classes**: `AIPipeline`
+
+#### `gemini_extractor_fixed.py`
+- **Purpose**: Integration with Google Gemini 2.5 Flash AI model
+- **Functions**:
+  - Extreme prompt engineering for Hinglish invoice extraction
+  - JSON response parsing and validation
+  - Fallback invoice creation for failed extractions
+- **Key Classes**: `GeminiExtractor`
+
+#### `redis_manager.py`
+- **Purpose**: Redis connection and queue operations
+- **Functions**:
+  - Message consumption using BLPOP (blocking)
+  - Publishing to output and error queues
+  - Deduplication key management
+- **Key Classes**: `RedisManager`
+
+#### `deduplication_simple.py`
+- **Purpose**: Message deduplication using exact key matching
+- **Functions**:
+  - Creates unique keys from chatname + sender + timestamp + message
+  - Checks for duplicates using Redis
+  - Marks messages as processed
+- **Key Classes**: `DeduplicationEngine`
+
+#### `models.py`
+- **Purpose**: Data structure definitions
+- **Classes**:
+  - `WhatsAppMessage`: Structure for incoming messages
+  - `InvoiceData`: Structure for extracted invoice information
+  - `ProcessedMessage`: Structure for tracking processed messages
+
+#### `config.py`
+- **Purpose**: Configuration management
+- **Functions**:
+  - Loads environment variables
+  - Validates required configuration
+  - Provides configuration constants
+
+### Utility Files
+
+#### `check_queues.py`
+- **Purpose**: Monitor Redis queue status
+- **Functions**: Shows input/output/error queue lengths and contents
+
+#### `view_invoices.py`
+- **Purpose**: Display processed invoices in readable format
+- **Functions**: Shows Order ID, Customer, Items, Confidence, Contact
+
+#### `send_test_messages.py`
+- **Purpose**: Testing utilities
+- **Functions**: Send test messages, clear queues, check status
+
+## Installation & Setup
+
+### Prerequisites
+- Python 3.8+
+- Redis server (running on localhost:6379)
+- Google Gemini API key
+- Backend server running on port 8081
+
+### Step 1: Install Dependencies
 ```bash
+cd ai-pipeline
 pip install -r requirements.txt
 ```
 
-2. Set up environment variables:
+### Step 2: Configure Environment
 ```bash
+# Copy the environment template
 cp .env.example .env
+
 # Edit .env with your configuration
+# Set GOOGLE_API_KEY, REDIS_HOST, etc.
 ```
 
-3. Install and start Redis server:
+### Step 3: Start Redis Server
 ```bash
-# Windows: Download and install Redis from https://redis.io/download
-# Or use: pip install redis-server
+# Option 1: Local Redis
 redis-server
+
+# Option 2: WSL Ubuntu
+wsl -d Ubuntu redis-server --daemonize yes
+
+# Option 3: Docker
+docker run -d -p 6379:6379 redis:latest
 ```
 
-## Usage
-
-### Start the AI Pipeline Worker
-
+### Step 4: Start Backend Server
 ```bash
+cd ../backend
+go run cmd/main.go
+```
+
+### Step 5: Start AI Pipeline
+```bash
+cd ai-pipeline
 python ai_pipeline.py
 ```
 
-### Start the API Server
+## Running the System
 
+### Complete Startup Sequence
+
+**Terminal 1: Redis**
 ```bash
-python api_server.py
+wsl -d Ubuntu redis-server --daemonize yes
 ```
 
-### Run Tests
-
+**Terminal 2: Backend**
 ```bash
-python test_pipeline.py
+cd C:\Users\manoj\Vyaap\backend
+go run cmd/main.go
 ```
 
-## API Endpoints
-
-### Health Check
+**Terminal 3: AI Pipeline**
 ```bash
-GET /health
+cd C:\Users\manoj\Vyaap\ai-pipeline
+python ai_pipeline.py
 ```
 
-### Ingest Messages
+**Terminal 4: Testing**
 ```bash
-POST /ingest
-Content-Type: application/json
+# Test backend health
+curl http://localhost:8081/health
 
-{
-  "chatName": "test_neo",
-  "messages": [
-    {"text": "Bhaiya 2 blue dupatta pack karo", "sender": "customer", "timestamp": "12:00"}
-  ]
-}
+# Send test message
+Invoke-RestMethod -Uri "http://localhost:8081/ingest" -Method POST -ContentType "application/json" -Body '{"chatName": "test_neo", "messages": [{"text": "Bhaiya 2 blue dupatta pack karo urgent delivery", "sender": "customer1", "timestamp": "13:00"}]}'
+
+# View results
+python view_invoices.py
 ```
-
-### Get Invoices
-```bash
-POST /invoices
-Content-Type: application/json
-
-{
-  "chat_name": "test_neo",
-  "hours": 24
-}
-```
-
-### Get Revenue Report
-```bash
-POST /revenue
-Content-Type: application/json
-
-{
-  "chat_name": "test_neo",
-  "days": 7
-}
-```
-
-### Get All Users
-```bash
-GET /users
-```
-
-### Get System Stats
-```bash
-GET /stats
-```
-
-## Components
-
-### 1. HinglishTextProcessor
-- Normalizes Hinglish text
-- Extracts numbers and prices
-- Handles common Hinglish words
-
-### 2. AIInvoiceExtractor
-- Extracts structured invoice data
-- Calculates confidence scores
-- Handles various message formats
-
-### 3. UserVectorStore
-- Vector-based user tracking
-- Duplicate detection
-- Message deduplication
-
-### 4. AIPipeline
-- Main orchestration
-- Redis integration
-- Message processing
 
 ## Configuration
 
-### Environment Variables
+### Environment Variables (.env)
 
-- `OPENAI_API_KEY`: OpenAI API key for enhanced processing
-- `REDIS_HOST`: Redis server host (default: localhost)
-- `REDIS_PORT`: Redis server port (default: 6379)
-- `DUPLICATE_THRESHOLD`: Similarity threshold for duplicates (default: 0.8)
-- `CONFIDENCE_THRESHOLD`: Minimum confidence for extraction (default: 0.5)
+```bash
+# Gemini API Configuration
+GOOGLE_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
 
-### Vector Database
+# Redis Configuration
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_INPUT_QUEUE=vyaap:queue:raw_chats:test_neo
+REDIS_OUTPUT_QUEUE=processed_invoices
+REDIS_ERROR_QUEUE=processing_errors
 
-Uses FAISS for efficient similarity search and user tracking.
+# Processing Configuration
+DUPLICATE_THRESHOLD=0.8
+CONFIDENCE_THRESHOLD=0.5
+MAX_MESSAGE_AGE_HOURS=24
 
-## Example Usage
-
-### Processing a Message
-
-```python
-from ai_pipeline import AIPipeline
-
-# Initialize pipeline
-pipeline = AIPipeline()
-
-# Process message
-message_data = {
-    "chatName": "test_neo",
-    "messages": [
-        {"text": "Bhaiya 2 blue dupatta pack karo", "sender": "customer", "timestamp": "12:00"}
-    ]
-}
-
-pipeline.process_message(json.dumps(message_data))
+# Logging Configuration
+LOG_LEVEL=INFO
+LOG_FILE=ai_pipeline.log
 ```
 
-### Getting Revenue Report
+## Data Flow
 
-```python
-# Get 7-day revenue report
-report = pipeline.generate_revenue_report("test_neo", days=7)
-print(f"Total Revenue: {report['total_revenue']}")
-print(f"Total Orders: {report['total_orders']}")
-```
+1. **Ingestion**: Backend receives HTTP POST at `/ingest`
+2. **Queuing**: Messages pushed to Redis `vyaap:queue:raw_chats:test_neo`
+3. **Consumption**: AI pipeline consumes using BLPOP (blocking)
+4. **Deduplication**: Checks for duplicates using MD5 hash of message content
+5. **AI Processing**: Gemini 2.5 Flash extracts invoice information
+6. **Output**: Structured JSON published to `processed_invoices` queue
+7. **Error Handling**: Failed extractions go to `processing_errors` queue
 
-## Message Formats Supported
-
-The pipeline handles various Hinglish message formats:
-
-- Order requests: "Bhaiya 2 blue dupatta pack karo"
-- Price inquiries: "Price kitna hai?"
-- Delivery instructions: "Delivery address: 123 Main Street"
-- Urgent orders: "Jaldi karna, urgent hai"
-
-## Output Format
-
-Extracted invoice data includes:
+## Extracted Data Structure
 
 ```json
 {
-  "order_id": "abc12345",
-  "customer_name": null,
+  "order_id": "uuid-generated-automatically",
+  "customer_name": "customer-name-if-mentioned",
   "items": [
     {
       "quantity": 2,
-      "description": "blue dupatta",
-      "unit_price": null,
-      "total_price": null
+      "description": "blue dupatta"
     }
   ],
-  "total_amount": 500.0,
-  "order_date": "2024-04-12",
-  "delivery_address": null,
-  "contact_info": null,
-  "special_instructions": null,
-  "confidence_score": 0.7
+  "delivery_address": "address-if-mentioned",
+  "contact_info": "sender-information",
+  "special_instructions": "urgent-delivery-if-mentioned",
+  "confidence_score": 0.8,
+  "order_date": "2026-04-19T13:13:02.426695"
 }
+```
+
+## Monitoring & Debugging
+
+### Check System Status
+```bash
+python check_queues.py
+```
+
+### View Processed Invoices
+```bash
+python view_invoices.py
+```
+
+### Monitor Redis Activity
+```bash
+wsl -d Ubuntu redis-cli MONITOR
+```
+
+### Check Redis Keys
+```bash
+wsl -d Ubuntu redis-cli KEYS "*"
+```
+
+### Check Queue Lengths
+```bash
+wsl -d Ubuntu redis-cli llen "vyaap:queue:raw_chats:test_neo"
+wsl -d Ubuntu redis-cli llen "processed_invoices"
+wsl -d Ubuntu redis-cli llen "processing_errors"
 ```
 
 ## Testing
 
-Run the comprehensive test suite:
-
+### Send Test Messages
 ```bash
-python test_pipeline.py
+python send_test_messages.py
+# Choose option 1 to send test message
 ```
 
-This tests:
-- Text processing
-- Invoice extraction
-- Vector database operations
-- Full pipeline integration
-- API endpoints
+### Test Different Message Types
+```bash
+# Quantity + Product
+Invoke-RestMethod -Uri "http://localhost:8081/ingest" -Method POST -ContentType "application/json" -Body '{"chatName": "test_neo", "messages": [{"text": "3 black shirts pack karo", "sender": "customer", "timestamp": "14:00"}]}'
 
-## Performance
+# Size + Urgency
+Invoke-RestMethod -Uri "http://localhost:8081/ingest" -Method POST -ContentType "application/json" -Body '{"chatName": "test_neo", "messages": [{"text": "blue jeans size L chahiye urgent", "sender": "customer", "timestamp": "14:15"}]}'
 
-- **Processing Speed**: ~100ms per message
-- **Memory Usage**: ~50MB for 1000 users
-- **Accuracy**: ~85% confidence score on typical messages
-- **Duplicate Detection**: 95% accuracy
+# Multiple items
+Invoke-RestMethod -Uri "http://localhost:8081/ingest" -Method POST -ContentType "application/json" -Body '{"chatName": "test_neo", "messages": [{"text": "2 red dupatta aur 1 green shirt chahiye jaldi", "sender": "customer", "timestamp": "14:30"}]}'
+```
 
 ## Troubleshooting
 
-### Redis Connection Issues
-```bash
-# Check Redis status
-redis-cli ping
+### Common Issues
 
-# Start Redis server
-redis-server
+#### Backend Not Running
+```bash
+# Check port usage
+netstat -ano | findstr :8081
+
+# Kill process if needed
+taskkill /PID <PID> /F
 ```
 
-### Memory Issues
-- Reduce vector index size
-- Increase duplicate threshold
-- Clean old messages regularly
+#### Redis Connection Issues
+```bash
+# Test Redis
+wsl -d Ubuntu redis-cli ping
 
-### Low Confidence Scores
-- Improve message formatting
-- Add more training examples
-- Adjust confidence threshold
+# Check Redis keys
+wsl -d Ubuntu redis-cli KEYS "*"
+```
+
+#### AI Pipeline Errors
+```bash
+# Check logs
+tail -f ai-pipeline/ai_pipeline.log
+
+# Clear errors
+python -c "import redis; r=redis.Redis(); r.delete('processing_errors')"
+```
+
+#### Duplicate Messages
+```bash
+# Clear duplicate keys
+python -c "import redis; r=redis.Redis(); [r.delete(key) for key in r.keys('processed:*')]"
+```
+
+## Performance & Scaling
+
+### Current Configuration
+- **Queue**: Redis with blocking consumption (BLPOP)
+- **AI Model**: Gemini 2.5 Flash (fast, efficient)
+- **Deduplication**: MD5 hash-based exact matching
+- **Processing**: Single-threaded, can be scaled horizontally
+
+### Scaling Options
+- **Multiple AI Pipeline Instances**: Run multiple processes
+- **Queue Partitioning**: Use multiple Redis queues
+- **Batch Processing**: Process multiple messages per cycle
+- **Caching**: Cache Gemini responses for similar messages
+
+## Security Considerations
+
+- **API Keys**: Store in environment variables, never commit to git
+- **Redis Security**: Use Redis AUTH in production
+- **Input Validation**: Backend validates input before queuing
+- **Error Handling**: Sensitive data not logged
+
+## Dependencies
+
+### Python Packages
+- `redis==5.0.1` - Redis client
+- `langchain==0.1.0` - LangChain framework
+- `langchain-google-genai==0.0.6` - Gemini integration
+- `google-generativeai==0.3.2` - Google AI client
+- `python-dotenv==1.0.0` - Environment variables
+- `pandas==2.1.4` - Data manipulation
+- `numpy==1.26.4` - Numerical operations
+- `pydantic==2.5.3` - Data validation
+
+### External Services
+- **Redis Server**: Message queuing and deduplication
+- **Google Gemini API**: AI-powered invoice extraction
+- **Backend Server**: HTTP endpoint for message ingestion
 
 ## Development
 
 ### Adding New Features
+1. Update models.py for new data structures
+2. Add processing logic to gemini_extractor_fixed.py
+3. Update configuration in config.py
+4. Add tests to send_test_messages.py
 
-1. Update `HinglishTextProcessor` for new text patterns
-2. Modify `AIInvoiceExtractor` for new extraction rules
-3. Add new API endpoints in `api_server.py`
-4. Update tests in `test_pipeline.py`
+### Debug Mode
+```bash
+# Set debug logging
+export LOG_LEVEL=DEBUG
+python ai_pipeline.py
+```
 
-### Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new features
-4. Submit a pull request
+### Production Deployment
+- Use process manager (systemd, supervisor)
+- Configure log rotation
+- Set up monitoring and alerts
+- Use Redis cluster for high availability
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-## Support
-
-For issues and questions:
-- Create an issue on GitHub
-- Check the troubleshooting section
-- Review the test cases for examples
+This project is part of the Vyaap WhatsApp invoice extraction system.
