@@ -23,10 +23,16 @@ func (h *ChatHandler) Ingest(c *gin.Context) {
 		return
 	}
 
-	if err := h.chatService.IngestChat(c.Request.Context(), req); err != nil {
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	if err := h.chatService.IngestChat(c.Request.Context(), req, userID.(string)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to buffer chat"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Chat successfully queued for AI processing"})
+	c.JSON(http.StatusOK, gin.H{"message": "Chat successfully queued for AI processing", "userID": userID})
 }

@@ -4,6 +4,7 @@ import { fileURLToPath, URL } from 'url'
 
 export default defineConfig({
   plugins: [react()],
+  base: './',
   build: {
     outDir: fileURLToPath(new URL('../extension/dashboard-react', import.meta.url)),
     emptyOutDir: true,

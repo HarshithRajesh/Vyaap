@@ -6,7 +6,7 @@ import logging
 import time
 import sys
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # Import our modules
 from config import Config
@@ -48,11 +48,11 @@ class AIPipeline:
         
         # Test Redis connection
         queue_length = self.redis_manager.get_queue_length(Config.REDIS_INPUT_QUEUE)
-        logging.info(f"Redis connection OK. Queue length: {queue_length}")
+        logging.info(f"Redis connection OK. Default queue length: {queue_length}")
         
         logging.info("All connections tested successfully")
     
-    def process_message(self, message: WhatsAppMessage) -> Optional[InvoiceData]:
+    def process_message(self, message: WhatsAppMessage, user_id: Optional[str] = None) -> Optional[InvoiceData]:
         """Process a single message"""
         try:
             logging.info(f"Processing message from {message.sender}: {message.text[:50]}...")
@@ -83,38 +83,86 @@ class AIPipeline:
                 "message": message.__dict__,
                 "timestamp": datetime.now().isoformat()
             }
-            self.redis_manager.publish_error(error_data)
+            self.redis_manager.publish_error(error_data, user_id=user_id)
             return None
     
-    def publish_invoice(self, invoice_data: InvoiceData) -> bool:
+    def publish_invoice(self, invoice_data: InvoiceData, user_id: str, chat_name: str) -> bool:
         """Publish processed invoice to Redis"""
         try:
-            success = self.redis_manager.publish_invoice(invoice_data)
+            success = self.redis_manager.publish_invoice(invoice_data, user_id, chat_name)
             if success:
-                logging.info(f"Published invoice {invoice_data.order_id} to output queue")
+                logging.info(f"Published invoice {invoice_data.order_id} for user {user_id}")
             return success
         except Exception as e:
             logging.error(f"Error publishing invoice: {e}")
             return False
+
+    def _to_whatsapp_message(self, raw_message: Dict[str, Any], chat_name: str) -> WhatsAppMessage:
+        """Convert Redis message payload to WhatsAppMessage model."""
+        return WhatsAppMessage(
+            text=raw_message.get("text", ""),
+            sender=raw_message.get("sender", ""),
+            timestamp=raw_message.get("timestamp", ""),
+            chat_name=chat_name,
+        )
+
+    def _merge_batch_messages(self, raw_messages: list, chat_name: str) -> Optional[WhatsAppMessage]:
+        """Merge a chat batch into one message so one batch creates one invoice."""
+        normalized = []
+        senders = []
+        timestamps = []
+
+        for raw_message in raw_messages:
+            if not isinstance(raw_message, dict):
+                continue
+            msg = self._to_whatsapp_message(raw_message, chat_name)
+            if not msg.text:
+                continue
+            normalized.append(msg.text)
+            if msg.sender:
+                senders.append(msg.sender)
+            if msg.timestamp:
+                timestamps.append(msg.timestamp)
+
+        if not normalized:
+            return None
+
+        sender = senders[-1] if senders else chat_name
+        timestamp = timestamps[-1] if timestamps else datetime.now().isoformat()
+        combined_text = "\n".join(normalized)
+        return WhatsAppMessage(
+            text=combined_text,
+            sender=sender,
+            timestamp=timestamp,
+            chat_name=chat_name,
+        )
     
     def run(self):
         """Main processing loop"""
         logging.info("Starting AI Pipeline main loop...")
-        logging.info(f"Listening to queue: {Config.REDIS_INPUT_QUEUE}")
+        logging.info("Listening to all queues matching vyaap:queue:raw_chats:*")
         
         try:
             while True:
-                # Consume messages from Redis
-                messages = self.redis_manager.consume_messages(Config.REDIS_INPUT_QUEUE)
-                
-                if messages:
-                    for message in messages:
-                        # Process each message
-                        invoice_data = self.process_message(message)
-                        
-                        if invoice_data:
-                            # Publish to output queue
-                            self.publish_invoice(invoice_data)
+                # Consume one message bundle from any user queue
+                queue_payload = self.redis_manager.consume_from_all_user_queues()
+                if queue_payload:
+                    user_id = queue_payload.get("user_id")
+                    chat_name = queue_payload.get("chat_name") or "unknown-chat"
+                    raw_messages = queue_payload.get("messages") or []
+
+                    if not user_id or not isinstance(raw_messages, list):
+                        logging.warning(f"Skipping malformed queue payload: {queue_payload}")
+                        continue
+
+                    merged_message = self._merge_batch_messages(raw_messages, chat_name)
+                    if not merged_message:
+                        logging.warning(f"Skipping empty message batch for queue payload: {queue_payload}")
+                        continue
+
+                    invoice_data = self.process_message(merged_message, user_id=user_id)
+                    if invoice_data:
+                        self.publish_invoice(invoice_data, user_id=user_id, chat_name=chat_name)
                 
                 # Small delay to prevent CPU overload
                 time.sleep(0.1)
