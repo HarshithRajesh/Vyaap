@@ -25,7 +25,11 @@ export default function ExtractBar({ onExtracted }) {
       }
 
       const count = response.count ?? response.messageCount ?? 0;
-      setStatus(`✓ Extracted ${count} messages. Sent to backend!`);
+      if (response.invoiceReady) {
+        setStatus(`✓ Extracted ${count} messages. Invoice JSON is ready.`);
+      } else {
+        setStatus(`✓ Extracted ${count} messages. Processing invoice...`);
+      }
       setStatusType('success');
 
       if (onExtracted) onExtracted();

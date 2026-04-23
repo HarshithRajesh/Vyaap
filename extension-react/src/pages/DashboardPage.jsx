@@ -19,6 +19,7 @@ const EMPTY_INVOICES = { pending: [], approved: [], generated: [], rejected: [] 
 export default function DashboardPage({ user, onLogout }) {
   const [activeTab, setActiveTab]     = useState('pending');
   const [invoices, setInvoices]       = useState(EMPTY_INVOICES);
+  const [allInvoices, setAllInvoices] = useState([]);
   const [loadingInv, setLoadingInv]   = useState(false);
 
   // ── Load invoices from background.js (mirrors loadInvoices()) ────────
@@ -28,6 +29,7 @@ export default function DashboardPage({ user, onLogout }) {
       if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
         const response = await chrome.runtime.sendMessage({ action: 'getPendingInvoices' });
         if (response?.success && response.invoices) {
+          setAllInvoices(response.invoices);
           setInvoices(categorize(response.invoices));
         }
       }
@@ -47,9 +49,42 @@ export default function DashboardPage({ user, onLogout }) {
       } else if (inv.status === 'approved')   result.approved.push(inv);
       else if (inv.status === 'generated')    result.generated.push(inv);
       else if (inv.status === 'rejected')     result.rejected.push(inv);
+      else result.pending.push(inv);
     });
     return result;
   }
+
+  const updateInvoice = (invoiceId, updater) => {
+    setAllInvoices(prev => {
+      const next = prev.map(inv => {
+        if (inv.id !== invoiceId) return inv;
+        return typeof updater === 'function' ? updater(inv) : { ...inv, ...updater };
+      });
+      setInvoices(categorize(next));
+      return next;
+    });
+  };
+
+  const handleApprove = (invoiceId) => {
+    updateInvoice(invoiceId, inv => ({ ...inv, status: 'approved' }));
+  };
+
+  const handleEdit = (invoiceId, patch) => {
+    updateInvoice(invoiceId, inv => ({
+      ...inv,
+      data: {
+        ...(inv.data || {}),
+        bill: {
+          ...(inv.data?.bill || {}),
+          ...patch,
+        },
+      },
+      rawJson: {
+        ...(inv.rawJson || {}),
+        ...patch,
+      },
+    }));
+  };
 
   // ── On mount + listen to background messages (mirrors init()) ────────
   useEffect(() => {
@@ -128,6 +163,8 @@ export default function DashboardPage({ user, onLogout }) {
               <InvoiceCard
                 key={inv.id || inv.chatName || Math.random()}
                 invoice={inv}
+                onApprove={handleApprove}
+                onEdit={handleEdit}
               />
             ))}
           </div>

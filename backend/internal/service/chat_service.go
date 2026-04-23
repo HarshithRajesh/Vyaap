@@ -8,7 +8,7 @@ import (
 )
 
 type ChatService interface {
-	IngestChat(ctx context.Context, chat *models.ChatRequest) error
+	IngestChat(ctx context.Context, chat *models.ChatRequest, userID string) error
 }
 
 type chatService struct {
@@ -19,6 +19,6 @@ func NewChatService(repo repository.ChatRepo) ChatService {
 	return &chatService{repo: repo}
 }
 
-func (s *chatService) IngestChat(ctx context.Context, chat *models.ChatRequest) error {
-	return s.repo.PushToQueue(ctx, chat)
+func (s *chatService) IngestChat(ctx context.Context, chat *models.ChatRequest, userID string) error {
+	return s.repo.PushToQueue(ctx, chat, userID)
 }

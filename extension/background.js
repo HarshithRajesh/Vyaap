@@ -48,13 +48,25 @@ async function handleAction(request) {
 
       // Get stored token for auth (if backend requires it in future)
       const token = await getStoredToken();
+      const existingInvoices = await getInvoicesFromBackend(token);
+      const existingIds = new Set(existingInvoices.map(inv => inv.id));
       const backendResponse = await postToBackend('/ingest', payload, token);
+      const latestInvoice = await waitForNewInvoice(existingIds, token);
+
+      if (latestInvoice) {
+        chrome.runtime.sendMessage({
+          target: 'dashboard',
+          type: 'invoice_ready',
+          invoice: latestInvoice,
+        }).catch(() => {});
+      }
 
       return {
         success: true,
         goResponse: backendResponse.message,
         count: extractedMessages.length,
         messageCount: extractedMessages.length,
+        invoiceReady: !!latestInvoice,
       };
     }
 
@@ -116,10 +128,11 @@ async function handleAction(request) {
 
     // ── Original: get invoices from storage ─────────────────────────────────
     case 'getPendingInvoices': {
-      const result = await chrome.storage.local.get(['vyaap_invoices']);
+      const token = await getStoredToken();
+      const backendInvoices = await getInvoicesFromBackend(token);
       return {
         success: true,
-        invoices: result.vyaap_invoices || [],
+        invoices: backendInvoices,
       };
     }
 
@@ -157,6 +170,84 @@ async function postToBackend(endpoint, body, token = null) {
   }
 
   return response.json();
+}
+
+async function getInvoicesFromBackend(token = null) {
+  const url = `${BACKEND}/invoices`;
+  const headers = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Invoice fetch failed ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
+  return invoices.map(normalizeInvoice);
+}
+
+function normalizeInvoice(inv = {}) {
+  const chatName = inv.chatName || 'Unknown Chat';
+  const items = Array.isArray(inv.items) ? inv.items : [];
+  const createdAt = inv.processedAt || inv.order_date || new Date().toISOString();
+  const senderName = inv.customer_name || inv.contact_info || inv.userId || 'Unknown';
+  const totalQuantity = items.reduce((sum, item) => {
+    const q = Number(item?.quantity ?? 0);
+    return sum + (Number.isFinite(q) ? q : 0);
+  }, 0);
+  const itemsTotal = inv.total_amount ?? inv.amount_due ?? null;
+  const billJson = {
+    invoiceNo: inv.order_id || 'Draft',
+    date: createdAt,
+    senderName,
+    from: chatName,
+    quantity: totalQuantity,
+    items,
+    itemsTotal,
+  };
+
+  return {
+    id: inv.order_id || `${chatName}-${createdAt}`,
+    status: inv.status || 'pending_verification',
+    createdAt,
+    chatName,
+    data: {
+      orderDetails: {
+        orderNumber: inv.order_id || 'Draft',
+      },
+      customer: {
+        name: senderName,
+      },
+      items,
+      bill: billJson,
+      rawMessages: [],
+      rawJson: billJson,
+    },
+    rawJson: billJson,
+    ...inv,
+  };
+}
+
+async function waitForNewInvoice(existingIds, token, timeoutMs = 30000, intervalMs = 1500) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const invoices = await getInvoicesFromBackend(token);
+    const created = invoices.find(inv => !existingIds.has(inv.id));
+    if (created) return created;
+    await sleep(intervalMs);
+  }
+  return null;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ─── Tab & injection helpers ──────────────────────────────────────────────────

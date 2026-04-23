@@ -30,6 +30,7 @@ func main() {
 	chatService := service.NewChatService(chatRepo)
 	chatHandler := handler.NewChatHandler(chatService)
 
+	invoiceHandler := handler.NewInvoiceHandler(chatRepo)
 	router := gin.Default()
 	router.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
@@ -59,8 +60,6 @@ func main() {
 	// 	})
 	// })
 
-	router.POST("/ingest", chatHandler.Ingest)
-
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"ping": "backend is alive"})
 	})
@@ -71,7 +70,10 @@ func main() {
 	protected := router.Group("/")
 	protected.Use(middleware.AuthMiddleware(rds))
 	{
+
+		protected.POST("/ingest", chatHandler.Ingest)
 		protected.GET("/logout", userHandler.Logout)
+		protected.GET("/invoices", invoiceHandler.GetUserInvoices)
 	}
 
 	err := router.Run()
