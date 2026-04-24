@@ -144,3 +144,95 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ── Inline edit section ─────────────────────────── */
+.editSection {
+  margin-bottom: 4px;
+}
+
+.editGrid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.editLabel {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.editInput {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.editInput:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(102,126,234,0.18);
+  background: var(--bg-card);
+}
+
+/* items editing */
+.editItemsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.addItemBtn {
+  font-size: 11px !important;
+  padding: 3px 8px !important;
+}
+
+.editItemRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.editQtyInput  { flex: 0 0 56px; }
+.editDescInput { flex: 1; }
+
+.removeItemBtn {
+  flex: 0 0 auto;
+  background: var(--red-bg);
+  color: var(--red);
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.removeItemBtn:hover { background: var(--red); color: #fff; }
+
+.editActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* ── Send to WhatsApp button ─────────────────────── */
+.sendWaBtn {
+  background: #25d366 !important;
+  color: #fff !important;
+  margin-left: auto;
+}
+.sendWaBtn:hover:not(:disabled) { background: #1da851 !important; }
+.sendWaBtn:disabled { opacity: 0.7; cursor: not-allowed; }
+
