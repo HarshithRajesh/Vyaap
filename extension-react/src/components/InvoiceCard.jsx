@@ -17,6 +17,7 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
 
   // Local editable state — initialised from invoice
   const [fields, setFields] = useState({
+    brandName:   bill.brandName  || bill.from || invoice.chatName || '',
     senderName:  bill.senderName || data.customer?.name || '',
     from:        bill.from       || invoice.chatName    || '',
     quantity:    String(bill.quantity   ?? ''),
@@ -55,6 +56,7 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
   const handleSave = (e) => {
     e.stopPropagation();
     const patch = {
+      brandName:  fields.brandName,
       senderName: fields.senderName,
       from:       fields.from,
       quantity:   Number(fields.quantity)   || 0,
@@ -72,6 +74,7 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
     e.stopPropagation();
     // Reset to current invoice data
     setFields({
+      brandName:  bill.brandName  || bill.from || invoice.chatName || '',
       senderName: bill.senderName || data.customer?.name || '',
       from:       bill.from       || invoice.chatName    || '',
       quantity:   String(bill.quantity   ?? ''),
@@ -81,42 +84,149 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
     setEditing(false);
   };
 
-  // ── Send PDF directly to WhatsApp chat ─────────────────────────────
+  // ── Build a professional PDF (shared by Send to WA & Download) ─────────────
+  const buildInvoicePdf = () => {
+    // Use the live editable state first (fields + editItems) so the PDF always
+    // reflects what the user sees in the UI — even before Save is clicked.
+    const invoiceNo    = bill.invoiceNo   || invoice.order_id || invoice.id || 'Draft';
+    const brandName    = fields.brandName  || bill.from || invoice.chatName || 'Vyaap Business';
+    const customerName = fields.senderName || data.customer?.name || invoice.customer_name || 'Customer';
+    const dateStr      = formatDate(bill.date || invoice.createdAt || invoice.order_date);
+    // Use live editItems state; fall back to bill/invoice if empty
+    const items        = editItems.length ? editItems
+                       : (bill.items?.length ? bill.items : null)
+                       || (data.items?.length ? data.items : null)
+                       || (invoice.items?.length ? invoice.items : null)
+                       || [];
+    const totalQty     = (fields.quantity !== '' ? Number(fields.quantity) : null)
+                       ?? items.reduce((s, it) => s + (Number(it.quantity) || 1), 0);
+    const totalAmt     = (fields.itemsTotal !== '' ? Number(fields.itemsTotal) : null)
+                       ?? invoice.total_amount ?? invoice.amount_due ?? null;
+    const payStatus    = invoice.payment_status || 'pending';
+
+    const doc  = new jsPDF();
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+
+    // ── Branded Header bar ──────────────────────────────────────────────────
+    doc.setFillColor(30, 30, 50);
+    doc.rect(0, 0, pageW, 36, 'F');
+
+    doc.setTextColor(108, 99, 255);
+    doc.setFontSize(20);
+    doc.setFont('helvetica', 'bold');
+    doc.text(brandName, 14, 15);
+
+    doc.setTextColor(200, 200, 220);
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.text('INVOICE',        pageW - 14, 12, { align: 'right' });
+    doc.text(`#${invoiceNo}`,  pageW - 14, 20, { align: 'right' });
+    doc.text(`Date: ${dateStr}`, pageW - 14, 28, { align: 'right' });
+
+    // ── Customer Section ────────────────────────────────────────────────────
+    let y = 46;
+    doc.setTextColor(80, 80, 100);
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'bold');
+    doc.text('BILLED TO', 14, y);
+
+    y += 6;
+    doc.setTextColor(20, 20, 40);
+    doc.setFontSize(12);
+    doc.setFont('helvetica', 'bold');
+    doc.text(customerName, 14, y);
+
+    y += 5;
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 100, 120);
+    doc.text(`WhatsApp Chat: ${brandName}`, 14, y);
+
+    y += 5;
+    doc.text(`Payment Status: ${payStatus.replace(/_/g, ' ').toUpperCase()}`, 14, y);
+
+    // ── Divider ─────────────────────────────────────────────────────────────
+    y += 10;
+    doc.setDrawColor(200, 200, 220);
+    doc.setLineWidth(0.4);
+    doc.line(14, y, pageW - 14, y);
+    y += 8;
+
+    // ── Items Table Header ──────────────────────────────────────────────────
+    doc.setFillColor(245, 245, 250);
+    doc.rect(14, y - 5, pageW - 28, 10, 'F');
+
+    doc.setTextColor(60, 60, 80);
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.text('#',           16,          y);
+    doc.text('Description', 28,          y);
+    doc.text('Qty',         pageW - 50,  y, { align: 'right' });
+    doc.text('Price',       pageW - 14,  y, { align: 'right' });
+    y += 8;
+
+    // ── Items Rows ──────────────────────────────────────────────────────────
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 50);
+
+    if (items.length === 0) {
+      doc.setTextColor(150, 150, 170);
+      doc.text('No items listed', 28, y);
+      y += 8;
+    } else {
+      items.forEach((item, idx) => {
+        if (y > 265) { doc.addPage(); y = 20; }
+        const desc    = String(item.description || 'Item');
+        const qty     = Number(item.quantity) || 1;
+        const price   = item.price != null ? `Rs.${Number(item.price).toFixed(2)}` : '—';
+        const wrapped = doc.splitTextToSize(desc, 110);
+
+        doc.setFontSize(9);
+        doc.setTextColor(100, 100, 120);
+        doc.text(String(idx + 1),     16,         y);
+        doc.setTextColor(30, 30, 50);
+        doc.text(wrapped,             28,         y);
+        doc.text(String(qty),         pageW - 50, y, { align: 'right' });
+        doc.text(price,               pageW - 14, y, { align: 'right' });
+        y += 6 * wrapped.length + 2;
+      });
+    }
+
+    // ── Totals ──────────────────────────────────────────────────────────────
+    y += 4;
+    doc.setDrawColor(200, 200, 220);
+    doc.line(14, y, pageW - 14, y);
+    y += 8;
+
+    doc.setFontSize(10);
+    doc.setTextColor(80, 80, 100);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Total Quantity: ${totalQty}`, 14, y);
+
+    const totalLabel = totalAmt != null ? `Rs.${Number(totalAmt).toFixed(2)}` : 'N/A';
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.setTextColor(108, 99, 255);
+    doc.text(`Total: ${totalLabel}`, pageW - 14, y, { align: 'right' });
+    doc.setFont('helvetica', 'normal');
+
+    // ── Footer ──────────────────────────────────────────────────────────────
+    doc.setFontSize(8);
+    doc.setTextColor(160, 160, 180);
+    doc.text('Generated by Vyaap · Thank you for your order!', pageW / 2, pageH - 10, { align: 'center' });
+
+    return { doc, filename: `invoice-${invoiceNo}.pdf` };
+  };
+
+  // ── Attach PDF to WhatsApp chat ────────────────────────────────────────────
   const handleSendToWA = async (e) => {
     e.stopPropagation();
     setSendStatus('sending');
-
     try {
-      // 1. Build PDF
-      const doc = new jsPDF();
-      let y = 16;
-      doc.setFontSize(16);
-      doc.text('Invoice / Bill', 14, y); y += 10;
-      doc.setFontSize(11);
-      doc.text(`Invoice No: ${bill.invoiceNo || invoice.id || 'Draft'}`, 14, y); y += 7;
-      doc.text(`Date: ${formatDate(invoice.createdAt)}`, 14, y); y += 7;
-      doc.text(`Customer: ${bill.senderName || 'Unknown'}`, 14, y); y += 7;
-      doc.text(`From: ${bill.from || invoice.chatName || 'Unknown Chat'}`, 14, y); y += 10;
-      doc.text('Items:', 14, y); y += 7;
-      (bill.items || []).forEach((item, idx) => {
-        const line = `${idx + 1}. ${item.quantity ?? 1} x ${item.description || 'Item'}${
-          item.price != null ? `  - Rs.${item.price}` : ''
-        }`;
-        const wrapped = doc.splitTextToSize(line, 180);
-        doc.text(wrapped, 16, y);
-        y += 6 * wrapped.length;
-        if (y > 270) { doc.addPage(); y = 16; }
-      });
-      y += 4;
-      doc.text(`Total Quantity: ${bill.quantity ?? 0}`, 14, y); y += 7;
-      doc.text(`Items Total: ${bill.itemsTotal != null ? 'Rs.' + bill.itemsTotal : 'N/A'}`, 14, y); y += 7;
-      doc.text('Thank you for your order!', 14, y);
-
-      const filename = `invoice-${bill.invoiceNo || invoice.id || Date.now()}.pdf`;
-      // Get base64 (without the data URI prefix)
+      const { doc, filename } = buildInvoicePdf();
       const pdfBase64 = doc.output('datauristring').split(',')[1];
 
-      // 2. Send directly to WhatsApp via background
       const res = await chrome.runtime.sendMessage({
         action:   'sendWhatsAppPDF',
         pdfBase64,
@@ -124,36 +234,23 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
         chatName: invoice.chatName,
       });
 
+      if (!res?.success) {
+        console.error('[Vyaap] sendWhatsAppPDF failed:', res?.error);
+      }
+      // 'sent' here means PDF was staged in WhatsApp — user clicks green send
       setSendStatus(res?.success ? 'sent' : 'error');
     } catch (err) {
       console.error('[Vyaap] sendToWA error:', err);
       setSendStatus('error');
     }
-    setTimeout(() => setSendStatus(''), 4000);
+    setTimeout(() => setSendStatus(''), 6000);
   };
 
-  // ── PDF handler (unchanged) ───────────────────────────────────────────────
+  // ── Download PDF ────────────────────────────────────────────────────────────
   const handlePdf = (e) => {
     e.stopPropagation();
-    const doc = new jsPDF();
-    let y = 16;
-    doc.setFontSize(16);
-    doc.text('Invoice / Bill', 14, y); y += 10;
-    doc.setFontSize(11);
-    doc.text(`Invoice No: ${bill.invoiceNo || invoice.id || 'Draft'}`, 14, y); y += 7;
-    doc.text(`Date: ${formatDate(bill.date || invoice.createdAt)}`, 14, y); y += 7;
-    doc.text(`Sender Name: ${bill.senderName || 'Unknown'}`, 14, y); y += 7;
-    doc.text(`From: ${bill.from || 'Unknown Chat'}`, 14, y); y += 10;
-    doc.text('Items:', 14, y); y += 7;
-    (bill.items || []).forEach((item, idx) => {
-      const line = `${idx + 1}. ${item.quantity ?? 1} x ${item.description || 'Item'}`;
-      doc.text(line, 16, y); y += 6;
-      if (y > 270) { doc.addPage(); y = 16; }
-    });
-    y += 4;
-    doc.text(`Total Quantity: ${bill.quantity ?? 0}`, 14, y); y += 7;
-    doc.text(`Items Total: ${bill.itemsTotal ?? 'N/A'}`, 14, y);
-    doc.save(`invoice-${bill.invoiceNo || invoice.id || Date.now()}.pdf`);
+    const { doc, filename } = buildInvoicePdf();
+    doc.save(filename);
   };
 
   const statusColors = {
@@ -191,12 +288,19 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
       {editing ? (
         <div className={styles.editSection} onClick={e => e.stopPropagation()}>
           <div className={styles.editGrid}>
-            <label className={styles.editLabel}>Sender Name</label>
+            <label className={styles.editLabel}>Brand Name <span style={{color:'var(--text-muted)',fontWeight:400}}>(appears as header in PDF)</span></label>
+            <input
+              className={styles.editInput}
+              value={fields.brandName}
+              onChange={e => handleFieldChange('brandName', e.target.value)}
+              placeholder="Your shop / business name"
+            />
+            <label className={styles.editLabel}>Customer Name</label>
             <input
               className={styles.editInput}
               value={fields.senderName}
               onChange={e => handleFieldChange('senderName', e.target.value)}
-              placeholder="Sender name"
+              placeholder="Customer name"
             />
             <label className={styles.editLabel}>From / Chat</label>
             <input
@@ -337,9 +441,9 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
           disabled={sendStatus === 'sending'}
           title="Send invoice PDF to this WhatsApp chat"
         >
-          {sendStatus === 'sending' ? '⏳ Sending…'
-            : sendStatus === 'sent'  ? '✅ PDF Sent!'
-            : sendStatus === 'error' ? '❌ Failed'
+          {sendStatus === 'sending' ? '📎 Attaching…'
+            : sendStatus === 'sent'  ? '✅ PDF Ready — click ▶ in WhatsApp'
+            : sendStatus === 'error' ? '❌ Failed — try again'
             : '📲 Send as PDF'}
         </button>
       </div>
