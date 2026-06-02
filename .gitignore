@@ -11,12 +11,25 @@
 .env.*.local
 .env.production
 .env.staging
+
+# Nested .env files in any subdirectory (belt-and-suspenders)
+**/.env
+**/.env.local
+**/.env.production
+**/.env.staging
+
 *.pem
 *.key
 *.p12
 *.pfx
 *.cer
 *.crt
+
+# API keys / service account credentials
+*service-account*.json
+*credentials*.json
+*serviceAccountKey*.json
+google-credentials*.json
 
 # ──────────────────────────────────────────────────────────────
 # 🟦 GO (backend/)

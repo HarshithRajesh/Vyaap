@@ -15,7 +15,7 @@ import (
 
 type UserService interface {
 	SignUp(user *models.User) error
-	Login(ctx context.Context, user *models.Login) (*middleware.Tokens, error)
+	Login(ctx context.Context, user *models.Login) (string, *middleware.Tokens, error)
 }
 
 type userService struct {
@@ -52,25 +52,25 @@ func (s *userService) SignUp(user *models.User) error {
 	return nil
 }
 
-func (s *userService) Login(ctx context.Context, user *models.Login) (*middleware.Tokens, error) {
+func (s *userService) Login(ctx context.Context, user *models.Login) (string, *middleware.Tokens, error) {
 	var existinguser *models.User
 	existinguser, err := s.repo.GetUser(user.Email)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if existinguser == nil {
-		return nil, errors.New("user doesnt exist")
+		return "", nil, errors.New("user doesnt exist")
 	}
 	if !domain.CheckPasswordHash(user.Password, existinguser.Password) {
-		return nil, err
+		return "", nil, errors.New("invalid password")
 	}
 	userID := strconv.FormatUint(uint64(existinguser.ID), 10)
 	token, err := middleware.IssueTokens(userID)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if err := middleware.Persist(ctx, s.rds, token); err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	return token, nil
+	return existinguser.Name, token, nil
 }

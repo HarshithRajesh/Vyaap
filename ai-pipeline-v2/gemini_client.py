@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict
 
-from langchain.schema import HumanMessage
+from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from config import Config
@@ -21,7 +21,7 @@ class GeminiClient:
 
     def test_connection(self) -> bool:
         try:
-            self.llm([HumanMessage(content="hello")])
+            self.llm.invoke([HumanMessage(content="hello")])
             return True
         except Exception as exc:
             logging.error("Gemini connection failed: %s", exc)
@@ -30,7 +30,7 @@ class GeminiClient:
     def extract_invoice(self, combined_chat_text: str, default_contact: str) -> InvoiceData:
         prompt = self._prompt(combined_chat_text)
         try:
-            response = self.llm([HumanMessage(content=prompt)])
+            response = self.llm.invoke([HumanMessage(content=prompt)])
             parsed = self._parse_json(response.content)
             return self._to_invoice(parsed, default_contact)
         except Exception as exc:
@@ -47,12 +47,19 @@ Return only valid JSON and nothing else.
 Chat batch:
 {combined_chat_text}
 
+The generated invoice PDF will show these fields for each line item:
+  - quantity  : number of units ordered
+  - description : item name / product description
+  - price     : unit price in INR (Rs.) — shown as "Rs.250.00" per item in PDF
+The PDF also shows: customer name, brand/business name, total amount, payment status.
+Extract ALL of these from the chat as accurately as possible.
+
 JSON schema:
 {{
   "order_intent": "confirmed|inquiry|unclear",
   "order_confidence_reason": "short reason",
   "customer_name": "string|null",
-  "items": [{{"quantity": number, "description": "string"}}],
+  "items": [{{"quantity": number, "description": "string", "price": number|null}}],
   "total_amount": number|null,
   "subtotal_amount": number|null,
   "cgst_amount": number|null,
@@ -76,6 +83,10 @@ Rules:
 3) Keep unknown fields null.
 4) If tax fields are not present, keep them null.
 5) Ensure items is always an array. For confirmed with no clear line item, create one best-effort item.
+6) For each item, extract the unit price (e.g. "200 ka", "Rs.200", "200/-", "@250", "250 each").
+   - If a single total is mentioned for multiple identical items, divide by quantity to get unit price.
+   - If only a grand total is mentioned and items can't be priced individually, set item prices to null.
+7) total_amount should equal sum of (quantity × price) for all items when prices are known.
 """
 
     def _parse_json(self, content: Any) -> Dict[str, Any]:
@@ -159,7 +170,16 @@ Rules:
             description = str(item.get("description", "")).strip()
             if not description:
                 continue
-            cleaned.append({"quantity": quantity, "description": description})
+            # Preserve price if present
+            price = item.get("price")
+            try:
+                price = float(price) if price is not None and price != "" else None
+            except Exception:
+                price = None
+            entry = {"quantity": quantity, "description": description}
+            if price is not None:
+                entry["price"] = price
+            cleaned.append(entry)
         return cleaned
 
     @staticmethod

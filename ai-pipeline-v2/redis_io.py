@@ -96,8 +96,10 @@ class RedisIO:
         self.client.expire(err_key, Config.PROCESSED_TTL_HOURS * 3600)
 
     def _dedup_key(self, batch: QueueBatch) -> str:
+        # Include queued_at so each new extraction attempt (different timestamp)
+        # gets a unique dedup key even if the same messages are re-extracted.
         joined = "\n".join(f"{m.timestamp}|{m.sender}|{m.text}" for m in batch.messages)
         digest = hashlib.sha256(
-            f"{batch.user_id}|{batch.chat_name}|{joined}".encode("utf-8")
+            f"{batch.user_id}|{batch.chat_name}|{batch.queued_at}|{joined}".encode("utf-8")
         ).hexdigest()
         return f"{Config.REDIS_DEDUP_PREFIX}:{digest}"

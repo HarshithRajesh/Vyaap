@@ -129,7 +129,9 @@ export const authApi = {
     if (result.token) {
       await storage.set('vyaap_access_token', result.token);
     }
-    await storage.set('vyaap_user', JSON.stringify({ email }));
+    // Store name returned by backend so invoices can use it as senderName
+    const name = result.name || '';
+    await storage.set('vyaap_user', JSON.stringify({ email, name }));
     return result;
   },
 

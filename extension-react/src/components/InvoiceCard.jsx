@@ -7,7 +7,7 @@ import { jsPDF } from 'jspdf';
  * - Inline edit mode (no popup) when Edit is clicked
  * - Send Invoice to WhatsApp button
  */
-export default function InvoiceCard({ invoice, onApprove, onEdit }) {
+export default function InvoiceCard({ invoice, onApprove, onReject, onRestore, onEdit }) {
   const data    = invoice.data || {};
   const bill    = data.bill || {};
   const rawJson = data.rawJson || invoice.rawJson || bill || invoice;
@@ -16,19 +16,22 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
   const [sendStatus, setSendStatus] = useState(''); // 'sending' | 'sent' | 'error'
 
   // Local editable state — initialised from invoice
+  // senderName field (labeled "Customer Name") = WhatsApp contact = who we're selling to
+  // from field (labeled "From / Chat") = logged-in user's signup name = the seller
   const [fields, setFields] = useState({
-    brandName:   bill.brandName  || bill.from || invoice.chatName || '',
-    senderName:  bill.senderName || data.customer?.name || '',
-    from:        bill.from       || invoice.chatName    || '',
+    brandName:   '',  // always blank
+    senderName:  bill.customerName || bill.from || invoice.chatName || '',  // WhatsApp contact
+    from:        bill.sellerName   || bill.senderName || '',                // logged-in user
     quantity:    String(bill.quantity   ?? ''),
     itemsTotal:  String(bill.itemsTotal ?? ''),
   });
   const [editItems, setEditItems] = useState(
-    (bill.items || []).map(it => ({ ...it }))
+    (bill.items || []).map(it => ({ ...it, price: it.price ?? '' }))
   );
 
   const statusClass = invoice.status?.replace(/_/g, '-') || 'pending';
   const canApprove  = invoice.status === 'pending_verification' || invoice.status === 'pending';
+  const isRejected  = invoice.status === 'rejected';
 
   const formatStatus = (s = '') =>
     s.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
@@ -45,7 +48,7 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
 
   const handleAddItem = (e) => {
     e.stopPropagation();
-    setEditItems(prev => [...prev, { quantity: 1, description: '' }]);
+    setEditItems(prev => [...prev, { quantity: 1, description: '', price: '' }]);
   };
 
   const handleRemoveItem = (e, idx) => {
@@ -64,6 +67,7 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
       items:      editItems.map(it => ({
         ...it,
         quantity: Number(it.quantity) || 1,
+        price: it.price !== '' && it.price != null ? Number(it.price) : null,
       })),
     };
     if (onEdit) onEdit(invoice.id, patch);
@@ -72,15 +76,14 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
 
   const handleCancelEdit = (e) => {
     e.stopPropagation();
-    // Reset to current invoice data
     setFields({
-      brandName:  bill.brandName  || bill.from || invoice.chatName || '',
-      senderName: bill.senderName || data.customer?.name || '',
-      from:       bill.from       || invoice.chatName    || '',
-      quantity:   String(bill.quantity   ?? ''),
-      itemsTotal: String(bill.itemsTotal ?? ''),
+      brandName:   '',
+      senderName:  bill.customerName || bill.from || invoice.chatName || '',
+      from:        bill.sellerName   || bill.senderName || '',
+      quantity:    String(bill.quantity   ?? ''),
+      itemsTotal:  String(bill.itemsTotal ?? ''),
     });
-    setEditItems((bill.items || []).map(it => ({ ...it })));
+    setEditItems((bill.items || []).map(it => ({ ...it, price: it.price ?? '' })));
     setEditing(false);
   };
 
@@ -89,8 +92,12 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
     // Use the live editable state first (fields + editItems) so the PDF always
     // reflects what the user sees in the UI — even before Save is clicked.
     const invoiceNo    = bill.invoiceNo   || invoice.order_id || invoice.id || 'Draft';
-    const brandName    = fields.brandName  || bill.from || invoice.chatName || 'Vyaap Business';
-    const customerName = fields.senderName || data.customer?.name || invoice.customer_name || 'Customer';
+    // brandName in PDF header: leave blank (show nothing / Vyaap default only as fallback)
+    const brandName    = fields.brandName || '';
+    // customerName = WhatsApp contact (BILLED TO in PDF)
+    const customerName = fields.senderName || bill.customerName || bill.from || invoice.chatName || 'Customer';
+    // sellerName = logged-in user (FROM in PDF)
+    const sellerName   = fields.from || bill.sellerName || bill.senderName || '';
     const dateStr      = formatDate(bill.date || invoice.createdAt || invoice.order_date);
     // Use live editItems state; fall back to bill/invoice if empty
     const items        = editItems.length ? editItems
@@ -141,7 +148,21 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
     doc.setFontSize(9);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(100, 100, 120);
-    doc.text(`WhatsApp Chat: ${brandName}`, 14, y);
+    doc.text(`WhatsApp Chat: ${customerName}`, 14, y);
+
+    // Seller / From line
+    if (sellerName) {
+      y += 5;
+      doc.setTextColor(80, 80, 100);
+      doc.setFontSize(8);
+      doc.text('FROM', 14, y);
+      y += 5;
+      doc.setTextColor(20, 20, 40);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.text(sellerName, 14, y);
+      doc.setFont('helvetica', 'normal');
+    }
 
     y += 5;
     doc.text(`Payment Status: ${payStatus.replace(/_/g, ' ').toUpperCase()}`, 14, y);
@@ -179,7 +200,7 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
         if (y > 265) { doc.addPage(); y = 20; }
         const desc    = String(item.description || 'Item');
         const qty     = Number(item.quantity) || 1;
-        const price   = item.price != null ? `Rs.${Number(item.price).toFixed(2)}` : '—';
+        const price   = item.price != null && item.price !== '' ? `Rs.${Number(item.price).toFixed(2)}` : '—';
         const wrapped = doc.splitTextToSize(desc, 110);
 
         doc.setFontSize(9);
@@ -350,6 +371,14 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
                 onChange={e => handleItemChange(idx, 'description', e.target.value)}
                 placeholder="Description"
               />
+              <input
+                className={`${styles.editInput} ${styles.editPriceInput}`}
+                type="number"
+                value={item.price ?? ''}
+                onChange={e => handleItemChange(idx, 'price', e.target.value)}
+                placeholder="Price (₹)"
+                title="Price"
+              />
               <button
                 className={styles.removeItemBtn}
                 onClick={e => handleRemoveItem(e, idx)}
@@ -369,14 +398,14 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
         <>
           <div className={styles.grid}>
             <div className={styles.cell}>
-              <div className={styles.cellLabel}>Sender Name</div>
+              <div className={styles.cellLabel}>Seller (From)</div>
               <div className={styles.cellValue}>
-                {bill.senderName || data.customer?.name || invoice.customer?.name || 'Unknown'}
+                {bill.sellerName || bill.senderName || '—'}
               </div>
             </div>
             <div className={styles.cell}>
-              <div className={styles.cellLabel}>From</div>
-              <div className={styles.cellValue}>{bill.from || invoice.chatName || 'Unknown Chat'}</div>
+              <div className={styles.cellLabel}>Customer (To)</div>
+              <div className={styles.cellValue}>{bill.customerName || bill.from || invoice.chatName || 'Unknown'}</div>
             </div>
             <div className={styles.cell}>
               <div className={styles.cellLabel}>Quantity</div>
@@ -398,6 +427,9 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
                   <div key={idx} className={styles.itemRow}>
                     <span className={styles.itemQty}>{item.quantity ?? 1}x</span>
                     <span className={styles.itemDesc}>{item.description || 'Item'}</span>
+                    <span className={styles.itemPrice}>
+                      {item.price != null && item.price !== '' ? `₹${Number(item.price).toFixed(2)}` : '—'}
+                    </span>
                   </div>
                 ))
               )}
@@ -417,7 +449,18 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
           <>
             <button
               className="btn btn-ghost btn-sm"
-              onClick={e => { e.stopPropagation(); setEditing(true); }}
+              onClick={e => {
+                e.stopPropagation();
+                setFields({
+                  brandName:   '',
+                  senderName:  bill.customerName || bill.from || invoice.chatName || '',
+                  from:        bill.sellerName   || bill.senderName || '',
+                  quantity:    String(bill.quantity   ?? ''),
+                  itemsTotal:  String(bill.itemsTotal ?? ''),
+                });
+                setEditItems((bill.items || []).map(it => ({ ...it, price: it.price ?? '' })));
+                setEditing(true);
+              }}
             >
               ✏️ Edit
             </button>
@@ -426,7 +469,23 @@ export default function InvoiceCard({ invoice, onApprove, onEdit }) {
                 className="btn btn-primary btn-sm"
                 onClick={e => { e.stopPropagation(); onApprove && onApprove(invoice.id); }}
               >
-                Approve
+                ✅ Approve
+              </button>
+            )}
+            {canApprove && (
+              <button
+                className={`btn btn-sm ${styles.rejectBtn}`}
+                onClick={e => { e.stopPropagation(); onReject && onReject(invoice.id); }}
+              >
+                🗑️ Reject
+              </button>
+            )}
+            {isRejected && (
+              <button
+                className={`btn btn-sm ${styles.restoreBtn}`}
+                onClick={e => { e.stopPropagation(); onRestore && onRestore(invoice.id); }}
+              >
+                🔄 Restore to Pending
               </button>
             )}
             <button className="btn btn-ghost btn-sm" onClick={handlePdf}>

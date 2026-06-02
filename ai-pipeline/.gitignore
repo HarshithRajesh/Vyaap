@@ -1,0 +1,27 @@
+.env
+.env.local
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyc
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+*.log.*
+logs/
+
+# Test / debug
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
