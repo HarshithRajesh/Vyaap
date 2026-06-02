@@ -35,3 +35,4 @@ Thumbs.db
 # Test results
 Todo.md
 test_results/
+.env

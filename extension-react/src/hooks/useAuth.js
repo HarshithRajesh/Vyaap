@@ -45,7 +45,7 @@ export function useAuth() {
   const login = useCallback(async (email, password) => {
     const result = await authApi.login(email, password);
     setIsLoggedIn(true);
-    setUser({ email });
+    setUser({ email, name: result.name || '' });
     return result;
   }, []);
 

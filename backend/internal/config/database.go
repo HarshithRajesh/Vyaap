@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	// "github.com/HarshithRajesh/Vyaap/internal/models"
+	"github.com/HarshithRajesh/Vyaap/internal/models"
 	"github.com/joho/godotenv"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -21,9 +21,12 @@ type Redis struct {
 }
 
 func init() {
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Errorf("No .env file is found")
+	if err := godotenv.Load(); err != nil {
+		if err2 := godotenv.Load("../.env"); err2 != nil {
+			if err3 := godotenv.Load("../../.env"); err3 != nil {
+				fmt.Println("Warning: No .env file found at standard paths. Environment variables must be set manually.")
+			}
+		}
 	}
 }
 
@@ -43,9 +46,9 @@ func ConnectDB() (*gorm.DB, error) {
 	}
 	fmt.Println("Database connect to GORM!!!")
 
-	// if err := db.AutoMigrate(&models.User{}); err != nil {
-	// 	log.Fatalf("Failed to migrate database: %v", err)
-	// }
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		return nil, fmt.Errorf("failed to migrate database: %v", err)
+	}
 	return db, nil
 }
 

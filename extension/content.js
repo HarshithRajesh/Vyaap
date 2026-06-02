@@ -57,18 +57,52 @@
   }
  // first helps to extract current chat name 
   function extractCurrentChat() {
-    const selectors = [
-      'header span[title]',
-      'header div[role="button"] span[dir="auto"]',
-      'header span[dir="auto"]',
+    // WhatsApp generic accessibility strings that are NOT contact names
+    const IGNORED = new Set([
+      'click here for contact info',
+      'click here for group info',
+      'type a message',
+      '',
+    ]);
+
+    // Ordered list of selectors to try — most specific first
+    const candidates = [
+      // The chat header title span (has the actual name as `title` attr)
+      () => {
+        const spans = Array.from(document.querySelectorAll('header span[title]'));
+        for (const el of spans) {
+          const t = (el.getAttribute('title') || '').trim();
+          if (t && !IGNORED.has(t.toLowerCase())) return t;
+        }
+        return null;
+      },
+      // Data-testid that WhatsApp uses for the conversation header name
+      () => {
+        const el = document.querySelector('[data-testid="conversation-header"] span[dir="auto"]')
+                || document.querySelector('[data-testid="conversation-info-header-chat-title"]');
+        if (el) {
+          const t = (el.getAttribute('title') || el.innerText || '').trim();
+          if (t && !IGNORED.has(t.toLowerCase())) return t;
+        }
+        return null;
+      },
+      // Fallback: any header span[dir="auto"] whose text isn't a generic string
+      () => {
+        const spans = Array.from(document.querySelectorAll('header span[dir="auto"]'));
+        for (const el of spans) {
+          const t = (el.getAttribute('title') || el.innerText || el.textContent || '').replace(/\u200e/g, '').trim();
+          if (t && !IGNORED.has(t.toLowerCase()) && t.length > 0 && t.length < 80) return t;
+        }
+        return null;
+      },
     ];
-    let nameEl = null;
-    for (const sel of selectors) {
-      nameEl = safeQuery(document, sel);
-      if (nameEl) break;
+
+    for (const fn of candidates) {
+      const name = fn();
+      if (name) return { name, isGroup: false, timestamp: new Date().toISOString() };
     }
-    const name = nameEl?.getAttribute('title') || cleanText(nameEl) || 'Unknown';
-    return { name, isGroup: false, timestamp: new Date().toISOString() };
+
+    return { name: 'Unknown', isGroup: false, timestamp: new Date().toISOString() };
   }
   // helps to scroll entire chat
   function getScrollContainer() {

@@ -49,15 +49,21 @@ func (h *UserHandler) Login(c *gin.Context) {
 		})
 		return
 	}
-	token, err := h.userService.Login(c.Request.Context(), &user)
+	name, token, err := h.userService.Login(c.Request.Context(), &user)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error(),
 		})
 		return
 	}
+	if token == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "login service returned no token",
+		})
+		return
+	}
 	middleware.SetAuthCookies(c, token)
-	c.JSON(http.StatusOK, gin.H{"message": "Login Successfull"})
+	c.JSON(http.StatusOK, gin.H{"message": "Login Successfull", "name": name})
 }
 
 func (h *UserHandler) Logout(c *gin.Context) {

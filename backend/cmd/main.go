@@ -21,7 +21,10 @@ func main() {
 
 	rds := config.NewRedis()
 
-	db, _ := config.ConnectDB()
+	db, err := config.ConnectDB()
+	if err != nil {
+		log.Fatalf("❌ Database connection failed: %v", err)
+	}
 	userRepo := repository.NewUserRepository(db)
 	userService := service.NewUserService(userRepo, rds)
 	userHandler := handler.NewUserHandler(userService, rds)
@@ -76,7 +79,7 @@ func main() {
 		protected.GET("/invoices", invoiceHandler.GetUserInvoices)
 	}
 
-	err := router.Run()
+	err = router.Run()
 	if err != nil {
 		log.Fatal(err)
 	}

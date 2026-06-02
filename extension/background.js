@@ -105,7 +105,7 @@ async function handleAction(request) {
         console.warn('[Vyaap BG] Could not read cookie:', cookieErr.message);
       }
 
-      return { success: true, message: data.message, token };
+      return { success: true, message: data.message, token, name: data.name || '' };
     }
 
     // ── New: Logout via background (protected endpoint) ─────────────────────
@@ -150,95 +150,128 @@ async function handleAction(request) {
               const wait = ms => new Promise(r => setTimeout(r, ms));
               const log  = (...a) => console.log('[Vyaap]', ...a);
 
-              // ── Pre-flight: ensure a chat is actually open ──────────────
-              // WhatsApp might be on the chat list, not inside a conversation.
-              const composeBox =
-                document.querySelector('[data-testid="conversation-compose-box-input"]') ||
-                document.querySelector('div[contenteditable="true"][data-tab="10"]') ||
-                document.querySelector('footer div[contenteditable="true"]');
-              if (!composeBox) {
-                resolve({ success: false, error: 'No WhatsApp chat is open. Open a conversation first.' });
+              // ── Build the PDF File ────────────────────────────────────
+              const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+              const blob  = new Blob([bytes], { type: 'application/pdf' });
+              const file  = new File([blob], fname, { type: 'application/pdf' });
+              log('PDF built:', fname, file.size, 'bytes');
+
+              // ── Pre-flight: check WhatsApp conversation is open ───────
+              // Use #main — it's always present when a chat is open.
+              // We do NOT gate on the compose box here because its selectors
+              // change with every WhatsApp release.
+              const chatPanel =
+                document.querySelector('[data-testid="conversation-panel-body"]') ||
+                document.querySelector('[data-testid="conversation-panel-messages"]') ||
+                document.querySelector('#main') ||
+                document.querySelector('main');
+              if (!chatPanel) {
+                resolve({ success: false, error: 'No WhatsApp chat is open. Please open a conversation first.' });
                 return;
               }
-              log('Pre-flight: compose box found ✓');
+              log('Pre-flight: chat panel found ✓', chatPanel.id || chatPanel.tagName);
 
-              // ── Helper: detect if WhatsApp is showing attachment preview ──
-              // When a file is staged, WhatsApp shows a preview screen that
-              // replaces or overlays the compose area.
-              const isAttached = () => {
-                // WhatsApp shows one of these elements in attachment preview mode:
-                return !!(
-                  document.querySelector('[data-testid="media-confirmation-screen"]') ||
-                  document.querySelector('[data-testid="media-upload-preview"]') ||
-                  document.querySelector('[data-testid="document-preview-thumbnail"]') ||
-                  document.querySelector('[data-icon="document-pdf"]') ||
-                  // Fallback: compose box is gone/hidden (replaced by preview screen)
-                  (() => {
-                    const box = document.querySelector('[data-testid="conversation-compose-box-input"]') ||
-                                document.querySelector('div[contenteditable="true"][data-tab="10"]');
-                    if (!box) return true; // box gone = preview is up
-                    const s = window.getComputedStyle(box);
-                    return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
-                  })()
-                );
+              // ── Helper: inject a File into a file input ───────────────
+              const setFiles = (input) => {
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                Object.defineProperty(input, 'files', {
+                  configurable: true,
+                  get() { return dt.files; },
+                });
+                input.dispatchEvent(new Event('input',  { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                log('Injected file, accept=', input.accept || '(all)');
               };
 
-              // ══════════════════════════════════════════════════════════════
-              // Strategy A — Paste file into WhatsApp message input
-              // WhatsApp Web listens to paste events with file data.
-              // VERIFIED: checks isAttached() after wait to prevent false-positive.
-              // ══════════════════════════════════════════════════════════════
+              // ── Helper: enumerate file inputs in DOM ──────────────────
+              const logInputs = () => {
+                const all = Array.from(document.querySelectorAll('input[type="file"]'));
+                log(`File inputs in DOM: ${all.length}`);
+                all.forEach((inp, i) => log(`  [${i}] accept="${inp.accept}"`));
+                return all;
+              };
+
+              // ── Helper: pick a document-accepting input ───────────────
+              // Rejects image/video-only inputs to avoid "file not supported"
+              const pickDocInput = (inputs) => inputs.find(inp => {
+                const a = (inp.accept || '').toLowerCase();
+                if (a === '' || a === '*') return true;
+                if (a.includes('application/pdf')) return true;
+                if (a.includes('application/')) return true;
+                const onlyImageVideo = a.split(',').every(t =>
+                  t.trim().startsWith('image/') || t.trim().startsWith('video/'));
+                return !onlyImageVideo;
+              });
+
+              // ── Diagnostic: can we detect attachment preview? ─────────
+              const isAttached = () => !!(
+                document.querySelector('[data-testid="media-confirmation-screen"]') ||
+                document.querySelector('[data-testid="media-upload-preview"]') ||
+                document.querySelector('[data-testid="document-preview-thumbnail"]') ||
+                document.querySelector('[data-icon="document-pdf"]')
+              );
+
+              // ══════════════════════════════════════════════════════════
+              // Strategy A — Paste file into WhatsApp message compose box
+              // ══════════════════════════════════════════════════════════
               const tryPaste = async () => {
-                const box = composeBox; // already found in pre-flight
+                // Try many selectors — WhatsApp changes these every release
+                const box =
+                  document.querySelector('[data-testid="conversation-compose-box-input"]') ||
+                  document.querySelector('div[contenteditable="true"][data-tab="10"]') ||
+                  document.querySelector('div[contenteditable="true"][data-tab="6"]') ||
+                  document.querySelector('div[contenteditable="true"][role="textbox"]') ||
+                  document.querySelector('footer div[contenteditable="true"]') ||
+                  chatPanel.querySelector('div[contenteditable="true"]');
+                if (!box) { log('Paste: no compose box found'); return false; }
+
                 box.focus();
                 await wait(150);
 
                 const dt = new DataTransfer();
                 dt.items.add(file);
-                const paste = new ClipboardEvent('paste', {
+                box.dispatchEvent(new ClipboardEvent('paste', {
                   bubbles: true, cancelable: true, clipboardData: dt,
-                });
-                log('Paste: dispatching on', box.tagName);
-                box.dispatchEvent(paste);
+                }));
                 await wait(1500);
 
                 const ok = isAttached();
-                log('Paste: attachment detected?', ok);
-                return ok; // only true if WhatsApp actually responded
+                log('Paste: done, preview visible?', ok);
+                return true; // optimistic — let next strategies run if this failed
               };
 
-              // ══════════════════════════════════════════════════════════════
-              // Strategy B — Inject directly into hidden document file input
-              // VERIFIED: checks isAttached() after injection.
-              // ══════════════════════════════════════════════════════════════
+              // ══════════════════════════════════════════════════════════
+              // Strategy B — Inject directly into a hidden document input
+              // WhatsApp always has hidden file inputs in the DOM.
+              // ══════════════════════════════════════════════════════════
               const tryDirectInput = async () => {
                 const inputs = logInputs();
                 const docInput = pickDocInput(inputs);
-                if (!docInput) { log('DirectInput: no document input in DOM'); return false; }
+                if (!docInput) { log('DirectInput: no document input found'); return false; }
 
                 log('DirectInput: injecting, accept=', docInput.accept);
                 setFiles(docInput);
                 await wait(2000);
 
                 const ok = isAttached();
-                log('DirectInput: attachment detected?', ok);
-                return ok;
+                log('DirectInput: done, preview visible?', ok);
+                return ok; // only counts as success if WhatsApp shows preview
               };
 
-              // ══════════════════════════════════════════════════════════════
-              // Strategy C — Open attach menu → find Document input → inject
-              // Optimistic: returns true if injection ran (hard to verify).
-              // ══════════════════════════════════════════════════════════════
+              // ══════════════════════════════════════════════════════════
+              // Strategy C — Open attach menu → Document input injection
+              // ══════════════════════════════════════════════════════════
               const tryAttachMenu = async () => {
                 const attachBtn =
                   document.querySelector('[data-testid="attach-menu-icon"]') ||
                   document.querySelector('[data-testid="attach-btn"]') ||
-                  document.querySelector('[data-icon="attach"]')?.closest('button, [role="button"]') ||
-                  document.querySelector('[data-icon="clip"]')?.closest('button, [role="button"]') ||
-                  document.querySelector('[data-icon="attach-menu-plus"]')?.closest('button, [role="button"]') ||
-                  document.querySelector('[data-icon="plus"]')?.closest('button, [role="button"]') ||
-                  document.querySelector('footer [role="button"]');
-                if (!attachBtn) { log('AttachMenu: no attach button found'); return false; }
+                  document.querySelector('[data-icon="attach"]')?.closest('button,[role="button"]') ||
+                  document.querySelector('[data-icon="clip"]')?.closest('button,[role="button"]') ||
+                  document.querySelector('[data-icon="attach-menu-plus"]')?.closest('button,[role="button"]') ||
+                  document.querySelector('[data-icon="plus"]')?.closest('button,[role="button"]') ||
+                  chatPanel.querySelector('[role="button"]');
+                if (!attachBtn) { log('AttachMenu: no attach button'); return false; }
 
                 log('AttachMenu: clicking attach button');
                 attachBtn.click();
@@ -260,52 +293,49 @@ async function handleAction(request) {
                   docItem?.parentElement?.querySelector('input[type="file"]') ||
                   pickDocInput(inputs);
 
-                if (!docInput) { log('AttachMenu: no document input after menu open'); return false; }
-                log('AttachMenu: injecting, accept=', docInput.accept);
+                if (!docInput) { log('AttachMenu: no document input found'); return false; }
 
+                log('AttachMenu: injecting, accept=', docInput.accept);
                 setFiles(docInput);
                 await wait(2000);
 
                 const ok = isAttached();
-                log('AttachMenu: attachment detected?', ok);
-                return ok || true; // optimistic fallback — keep for next time
+                log('AttachMenu: done, preview visible?', ok);
+                return true; // optimistic — injection ran
               };
 
-              // ══════════════════════════════════════════════════════════════
+              // ══════════════════════════════════════════════════════════
               // Strategy D — Drag-and-drop onto the chat panel (optimistic)
-              // ══════════════════════════════════════════════════════════════
+              // ══════════════════════════════════════════════════════════
               const tryDrop = async () => {
-                const target =
-                  document.querySelector('[data-testid="conversation-panel-body"]') ||
-                  document.querySelector('[data-testid="conversation-panel-messages"]') ||
-                  document.querySelector('main') ||
-                  document.querySelector('#main');
-                if (!target) { log('Drop: no chat panel'); return false; }
-
                 const dt = new DataTransfer();
                 dt.items.add(file);
                 const ev = type => new DragEvent(type, {
                   bubbles: true, cancelable: true, view: window, dataTransfer: dt,
                 });
 
-                log('Drop: dispatching on', target.tagName);
-                target.dispatchEvent(ev('dragenter'));
+                log('Drop: firing events on', chatPanel.tagName, chatPanel.id);
+                chatPanel.dispatchEvent(ev('dragenter'));
                 await wait(150);
-                target.dispatchEvent(ev('dragover'));
+                chatPanel.dispatchEvent(ev('dragover'));
                 await wait(150);
-                target.dispatchEvent(ev('drop'));
+                chatPanel.dispatchEvent(ev('drop'));
                 await wait(1500);
-                return true; // optimistic — last resort
+
+                const ok = isAttached();
+                log('Drop: done, preview visible?', ok);
+                return true; // optimistic — always runs as final fallback
               };
 
-              // ── Run strategies in order ─────────────────────────────────
-              log('=== Starting PDF attach sequence ===');
+              // ── Run strategies ────────────────────────────────────────
+              log('=== PDF attach sequence START ===');
               if (await tryPaste())       { resolve({ success: true, method: 'paste'       }); return; }
               if (await tryDirectInput()) { resolve({ success: true, method: 'directinput' }); return; }
               if (await tryAttachMenu())  { resolve({ success: true, method: 'attachmenu'  }); return; }
               if (await tryDrop())        { resolve({ success: true, method: 'dragdrop'    }); return; }
 
-              resolve({ success: false, error: 'Could not attach PDF — check browser console for details' });
+              resolve({ success: false, error: 'All 4 attach strategies failed — open WhatsApp console for details' });
+
 
             } catch (err) {
               console.error('[Vyaap] Error:', err);
@@ -376,25 +406,41 @@ async function getInvoicesFromBackend(token = null) {
 
   const data = await response.json();
   const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
-  return invoices.map(normalizeInvoice);
+  return Promise.all(invoices.map(inv => normalizeInvoice(inv)));
 }
 
-function normalizeInvoice(inv = {}) {
+async function normalizeInvoice(inv = {}) {
+  // Read the logged-in user's name from storage
+  const userStr = await new Promise(resolve =>
+    chrome.storage.local.get(['vyaap_user'], r => resolve(r.vyaap_user || null))
+  );
+  const loggedInName = userStr ? (JSON.parse(userStr).name || '') : '';
+
   const chatName = inv.chatName || 'Unknown Chat';
   const items = Array.isArray(inv.items) ? inv.items : [];
   const createdAt = inv.processedAt || inv.order_date || new Date().toISOString();
-  const senderName = inv.customer_name || inv.contact_info || inv.userId || 'Unknown';
+
+  // sellerName  = the logged-in Vyaap user (the one sending the invoice)
+  // customerName = the WhatsApp contact (the person being invoiced)
+  const sellerName   = loggedInName || '';
+  const customerName = chatName;
+
   const totalQuantity = items.reduce((sum, item) => {
     const q = Number(item?.quantity ?? 0);
     return sum + (Number.isFinite(q) ? q : 0);
   }, 0);
   const itemsTotal = inv.total_amount ?? inv.amount_due ?? null;
+
   const billJson = {
-    invoiceNo: inv.order_id || 'Draft',
-    date: createdAt,
-    senderName,
-    from: chatName,
-    quantity: totalQuantity,
+    invoiceNo:    inv.order_id || 'Draft',
+    date:         createdAt,
+    sellerName,       // logged-in user (FROM field in UI/PDF)
+    customerName,     // WhatsApp contact (CUSTOMER NAME / BILLED TO in PDF)
+    brandName:    '',  // blank — user does not want this filled
+    // keep legacy aliases so old code doesn't break
+    senderName:   sellerName,
+    from:         customerName,
+    quantity:     totalQuantity,
     items,
     itemsTotal,
   };
@@ -405,12 +451,8 @@ function normalizeInvoice(inv = {}) {
     createdAt,
     chatName,
     data: {
-      orderDetails: {
-        orderNumber: inv.order_id || 'Draft',
-      },
-      customer: {
-        name: senderName,
-      },
+      orderDetails: { orderNumber: inv.order_id || 'Draft' },
+      customer: { name: customerName },
       items,
       bill: billJson,
       rawMessages: [],
@@ -435,7 +477,7 @@ async function waitForNewInvoice(existingIds, token, timeoutMs = 30000, interval
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
-background
+
 // ─── Tab & injection helpers ──────────────────────────────────────────────────
 async function getWhatsAppTab() {
   const tabs = await chrome.tabs.query({ url: 'https://web.whatsapp.com/*' });
