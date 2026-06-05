@@ -25,30 +25,41 @@
       return true;
     });
   }
- // function to find correct whatsapp chat continer
+ // function to find correct whatsapp chat container
   function getMain() {
-    const mains = document.querySelectorAll('#main');
-    for (const main of mains) {
-      if (
-        main.querySelector('div[role="row"]') ||
-        main.querySelector('.message-in') ||
-        main.querySelector('.message-out')
-      ) {
-        return main;
-      }
+    const selectors = [
+      '[data-testid="conversation-panel-messages"]',
+      '[data-testid="conversation-panel-body"]',
+      '#main',
+      'main',
+      'div[role="region"]',
+      '.two'
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) return el;
     }
-    return Array.from(mains).sort((a, b) => b.scrollHeight - a.scrollHeight)[0]
-      || document.querySelector('#main');
+    // Fallback: search for any div containing message bubbles
+    const bubble = document.querySelector('.message-in, .message-out, [data-testid="msg-container"]');
+    if (bubble) {
+      const parentPanel = bubble.closest('[role="region"]') || bubble.closest('main') || bubble.parentElement;
+      if (parentPanel) return parentPanel;
+    }
+    return null;
   }
  // wait for whatsapp web loads fully
   function waitForWhatsApp() {
     return new Promise(resolve => {
       const id = setInterval(() => {
-        const mains = document.querySelectorAll('#main');
-        const hasChat = Array.from(mains).some(m =>
-          m.querySelector('div[role="row"]') || m.querySelector('.message-in')
+        const main = getMain();
+        const hasChat = main && (
+          main.querySelector('div[role="row"]') || 
+          main.querySelector('.message-in') ||
+          main.querySelector('[data-testid="msg-container"]') ||
+          main.querySelector('[class*="message-in"]')
         );
-        if (hasChat && document.querySelector('#pane-side')) {
+        const paneSide = document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]');
+        if (hasChat && paneSide) {
           clearInterval(id);
           resolve();
         }
@@ -79,7 +90,8 @@
       // Data-testid that WhatsApp uses for the conversation header name
       () => {
         const el = document.querySelector('[data-testid="conversation-header"] span[dir="auto"]')
-                || document.querySelector('[data-testid="conversation-info-header-chat-title"]');
+                || document.querySelector('[data-testid="conversation-info-header-chat-title"]')
+                || document.querySelector('[data-testid="chat-title"]');
         if (el) {
           const t = (el.getAttribute('title') || el.innerText || '').trim();
           if (t && !IGNORED.has(t.toLowerCase())) return t;
@@ -109,6 +121,10 @@
     const main = getMain();
     if (!main) return null;
 
+    if (main.scrollHeight > main.clientHeight + 50) {
+      return main;
+    }
+
     const divs = Array.from(main.querySelectorAll('div'))
       .filter(d => d.scrollHeight > d.clientHeight + 50)
       .sort((a, b) => b.scrollHeight - a.scrollHeight);
@@ -117,21 +133,31 @@
   }
  // for parse each messages
   function parseMessage(el) {
-    const bubble = el.querySelector('.message-in') || el.querySelector('.message-out') || el;
-    const isOutgoing = bubble.classList.contains('message-out') || !!bubble.closest('.message-out');
+    const bubble = el.querySelector('.message-in') || 
+                   el.querySelector('.message-out') || 
+                   el.querySelector('[data-testid="msg-container"]') || 
+                   el.querySelector('[class*="message-in"]') || 
+                   el.querySelector('[class*="message-out"]') || 
+                   el;
+
+    const isIncoming = bubble.classList.contains('message-in') || 
+                       !!bubble.closest('.message-in') || 
+                       bubble.className.includes('message-in') ||
+                       !!bubble.closest('[class*="message-in"]');
+    const isOutgoing = !isIncoming;
 
     let text = '';
     let meta = '';
 
-    const copyable = safeQuery(bubble, '.copyable-text');
+    const copyable = safeQuery(bubble, '.copyable-text') || safeQuery(bubble, '[class*="copyable-text"]');
     if (copyable) {
       meta = copyable.getAttribute('data-pre-plain-text') || '';
-      const span = safeQuery(copyable, 'span.selectable-text');
+      const span = safeQuery(copyable, 'span.selectable-text') || safeQuery(copyable, '[class*="selectable-text"]');
       text = cleanText(span || copyable);
     }
 
     if (!text) {
-      const span = safeQuery(bubble, 'span.selectable-text');
+      const span = safeQuery(bubble, 'span.selectable-text') || safeQuery(bubble, '[class*="selectable-text"]');
       if (span) {
         text = cleanText(span);
         if (!meta) meta = span.parentElement?.getAttribute('data-pre-plain-text') || '';
@@ -151,6 +177,20 @@
       if (msgText) text = cleanText(msgText);
     }
 
+    if (!text) {
+      const dirEl = bubble.querySelector('[dir="ltr"]') || 
+                    bubble.querySelector('[dir="rtl"]') || 
+                    bubble.querySelector('[dir="auto"]');
+      if (dirEl) {
+        text = cleanText(dirEl);
+      }
+    }
+
+    if (!text) {
+      text = cleanText(bubble);
+      text = text.replace(/\s*\d{1,2}:\d{2}\s*(?:[ap]\.?m\.?)?$/i, '').trim();
+    }
+
     let timestamp = null, sender = null;
     if (meta) {
       const tMatch = meta.match(/\[([^\]]+)\]/);
@@ -159,14 +199,16 @@
       if (sMatch) sender = sMatch[1].trim();
     }
     if (!timestamp) {
-      const timeEl = safeQuery(bubble, 'span[data-testid="msg-time"]');
+      const timeEl = safeQuery(bubble, 'span[data-testid="msg-time"]') || safeQuery(bubble, '[class*="msg-time"]');
       if (timeEl) timestamp = cleanText(timeEl);
     }
 
     const hasMedia = !!(
       safeQuery(el, 'img[src^="blob:"]') ||
       safeQuery(el, 'video') ||
-      safeQuery(el, 'audio')
+      safeQuery(el, 'audio') ||
+      safeQuery(el, '[data-testid="image-thumb"]') ||
+      safeQuery(el, '[data-testid="video-thumb"]')
     );
 
     return { text, timestamp, sender, isOutgoing, hasMedia };
@@ -179,17 +221,23 @@
       return [];
     }
 
-    let rows = safeQueryAll(main, 'div[role="row"]');
-    if (rows.length === 0) rows = safeQueryAll(main, 'div.message-in, div.message-out');
+    let rows = safeQueryAll(main, '[data-testid="msg-container"]');
+    
+    if (rows.length === 0) {
+      rows = safeQueryAll(main, 'div.message-in, div.message-out');
+    }
+    if (rows.length === 0) {
+      rows = safeQueryAll(main, 'div[class*="message-in"], div[class*="message-out"]');
+    }
+    if (rows.length === 0) {
+      rows = safeQueryAll(main, 'div[role="row"]');
+    }
 
     log(`Found ${rows.length} rows`);
 
     const messages = [];
     rows.slice(-limit).forEach((el, i) => {
       try {
-        const hasBubble = el.querySelector('.message-in, .message-out') ||
-          el.classList.contains('message-in') || el.classList.contains('message-out');
-        if (!hasBubble) return;
         const msg = parseMessage(el);
         if (msg.text || msg.hasMedia) messages.push(msg);
       } catch (e) {
